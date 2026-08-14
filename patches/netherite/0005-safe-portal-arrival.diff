@@ -1,0 +1,17 @@
+diff --git a/magma/game/portal_live.c b/magma/game/portal_live.c
+index 7d35735f78e8fe4f01a57a75477dd7ca81dc942a..fa167d1b610963ae879c4a5bce644fba50e50c76 100644
+--- a/magma/game/portal_live.c
++++ b/magma/game/portal_live.c
+@@ -55,6 +55,12 @@ int gm_portal_find_or_make(GmWorld *world, int near_x, int near_z,
+             }
+         }
+     if(by<0)by=70;
++    /* Teleporter.makePortal clears the arrival volume around a new frame.
++     * Without that step a valid floor cell inside Nether terrain builds a
++     * portal with solid netherrack on both faces, then places the player
++     * inside an unbreakable portal pane with no possible walking exit. */
++    for(int x=bx+1;x<=bx+2;++x)for(int y=by;y<by+3;++y)
++        for(int z=bz-1;z<=bz+1;++z)gm_world_set_block(world,x,y,z,0);
+     for(int x=bx;x<bx+4;++x){gm_world_set_block(world,x,by-1,bz,49);gm_world_set_block(world,x,by+3,bz,49);}
+     for(int y=by;y<by+3;++y){gm_world_set_block(world,bx,y,bz,49);gm_world_set_block(world,bx+3,y,bz,49);}
+     for(int x=bx+1;x<=bx+2;++x)for(int y=by;y<by+3;++y)

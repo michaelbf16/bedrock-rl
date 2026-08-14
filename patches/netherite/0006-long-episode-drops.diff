@@ -1,0 +1,20 @@
+diff --git a/magma/game/live_sim.h b/magma/game/live_sim.h
+index d8287f0..a32d409 100644
+--- a/magma/game/live_sim.h
++++ b/magma/game/live_sim.h
+@@ -16,7 +16,11 @@ extern "C" {
+ /* Active EntityItem table. Must hold a full 27-slot chest break plus concurrent
+- * drops (mobs, player throw). Overflow is a bounded recoverable hold when the
+- * table is full - items are not silently discarded until overflow is also full. */
+-#define GM_LIVE_MAX 48
+-#define GM_LIVE_OVERFLOW_MAX 32
++ * drops (mobs, player throw). Long-horizon survival episodes can naturally
++ * leave hundreds of mined-block entities in old shafts before their vanilla
++ * lifespan expires. Keep enough active and overflow capacity that a later
++ * rare ore does not report a harvest drop but fail to create its entity. The
++ * store remains fixed-size and deterministic; 256 ordinary entities add only
++ * a small bounded amount of memory per environment. */
++#define GM_LIVE_MAX 256
++#define GM_LIVE_OVERFLOW_MAX 256
+ #define GM_LIVE_MAX_ENCHANTS 8  /* matches IC_MAX_ENCHANTS / StoredEnchantments cap */
+ #define GM_LIVE_FALL_UPDATES 128

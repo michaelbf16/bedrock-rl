@@ -1,0 +1,314 @@
+diff --git a/magma/game/test_armor_live.sh b/magma/game/test_armor_live.sh
+index 534f233..8572ec7 100755
+--- a/magma/game/test_armor_live.sh
++++ b/magma/game/test_armor_live.sh
+@@ -5,13 +5,13 @@ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o \
+ 	game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_armor_live.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+ 	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o \
+ 	-lm -o game/test_armor_live
+diff --git a/magma/game/test_chest_loot.sh b/magma/game/test_chest_loot.sh
+index b2a9b65..dc1bfc4 100755
+--- a/magma/game/test_chest_loot.sh
++++ b/magma/game/test_chest_loot.sh
+@@ -5,13 +5,13 @@ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o \
+ 	game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_chest_loot.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+ 	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o \
+ 	-lm -o game/test_chest_loot
+diff --git a/magma/game/test_container_live.sh b/magma/game/test_container_live.sh
+index da1bf37..b927280 100644
+--- a/magma/game/test_container_live.sh
++++ b/magma/game/test_container_live.sh
+@@ -5,13 +5,13 @@ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o \
+ 	game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_container_live.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+ 	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o \
+ 	-lm -o game/test_container_live
+diff --git a/magma/game/test_fluid_live.sh b/magma/game/test_fluid_live.sh
+index fde57a2..c08ee11 100755
+--- a/magma/game/test_fluid_live.sh
++++ b/magma/game/test_fluid_live.sh
+@@ -4,12 +4,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o \
+-	game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
++	game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
+ 	world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_fluid_live.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+-	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o \
++	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o \
+ 	world/blocks.o world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o -lm -o game/test_fluid_live
+ ./game/test_fluid_live
+diff --git a/magma/game/test_mob_live.sh b/magma/game/test_mob_live.sh
+index 49eace2..4ac8c68 100644
+--- a/magma/game/test_mob_live.sh
++++ b/magma/game/test_mob_live.sh
+@@ -4,12 +4,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o \
+ 	world/blocks.o world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_mob_live.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+-	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o \
+ 	-lm -o game/test_mob_live
+diff --git a/magma/game/test_plants_live.sh b/magma/game/test_plants_live.sh
+index 95de81a..410adbf 100755
+--- a/magma/game/test_plants_live.sh
++++ b/magma/game/test_plants_live.sh
+@@ -4,12 +4,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o \
+-	game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
++	game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
+ 	world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_plants_live.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+-	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o \
++	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o \
+ 	world/blocks.o world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o -lm -o game/test_plants_live
+ ./game/test_plants_live
+diff --git a/magma/game/test_play_compose.sh b/magma/game/test_play_compose.sh
+index 79828a5..38b0c80 100755
+--- a/magma/game/test_play_compose.sh
++++ b/magma/game/test_play_compose.sh
+@@ -12,14 +12,14 @@ CC=${CC:-gcc}
+ CFLAGS="-O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I$BLAZE/core"
+ 
+ # Force rebuild of composition objects, then link harness against them.
+-make game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/caps.o core/config.o game/timer.o \
+-  game/input_map.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
++make game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/caps.o game/rl_journal.o core/config.o game/timer.o \
++  game/input_map.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
+   world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+   assets/blockmodels.o core/math.o core/shade.o
+ 
+-OBJS="game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/caps.o core/config.o game/input_map.o \
++OBJS="game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/caps.o game/rl_journal.o core/config.o game/input_map.o \
+   game/timer.o \
+-  world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
++  world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+   renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o \
+   core/math.o core/shade.o"
+ 
+diff --git a/magma/game/test_player_ctl.c b/magma/game/test_player_ctl.c
+index 2713d01..d76d67a 100644
+--- a/magma/game/test_player_ctl.c
++++ b/magma/game/test_player_ctl.c
+@@ -184,7 +184,44 @@ int main(void)
+     CHECK(isr_hotbar_total(&plb.inv) + isr_main_total(&plb.inv) == before_total,
+           "break does not teleport its drop into inventory");
+     CHECK(last_edit.drop_id == 4 && last_edit.drop_count == 1,
+           "stone harvest emits one cobblestone item entity request");
++
++    /* The two vanilla log block IDs are distinct item IDs. Keep this live
++     * player path in lockstep with blaze/env/blaze_core.h: an acacia or dark
++     * oak trunk must never break successfully and silently emit drop zero. */
++    printf("case B2: log2 harvest emits its matching item and metadata\n");
++    fill_flat(win);
++    PsvPlayer log_player;
++    PvStats log_stats; pv_init(&log_stats);
++    spawn_at(&log_player, 24.5, 65.0, 24.5);
++    set_block_meta(win, 24, 64, 24, 162, 1);
++    isr_set_stack(&log_player.inv, 0, ic_mk(257 /* iron pick */, 1, 0));
++    log_player.inv.current_item = 0;
++    log_player.pitch = 89.0f;
++    gm_player_dig_reset();
++
++    GmAction log_break;
++    memset(&log_break, 0, sizeof log_break);
++    log_break.attack = 1;
++    GmBlockEdit log_edit = {0};
++    int log_saw_break = 0;
++    for (int t = 0; t < 200; ++t) {
++        GmBlockEdit edits[8];
++        int nedits = 0;
++        gm_player_tick((struct Chunk *)win, (struct McSinTable *)&st,
++                       (struct PsvPlayer *)&log_player,
++                       (struct PvStats *)&log_stats,
++                       log_break, 0, 0, 0, edits, &nedits, 8);
++        if (nedits == 1 && edits[0].id == 0) {
++            log_edit = edits[0];
++            log_saw_break = 1;
++            break;
++        }
++    }
++    CHECK(log_saw_break, "log2 block breaks through the live player path");
++    CHECK(log_edit.drop_id == 162 && log_edit.drop_count == 1 &&
++          log_edit.drop_meta == 1,
++          "log2 harvest emits one matching metadata-preserving item");
+-
++
+     /* ---------------- (C) UNDERWATER DIG PENALTY ---------------- */
+     /* EntityPlayer.getDigSpeed: eye inside water without aqua affinity divides
+@@ -735,6 +735,44 @@ int main(void)
+               "live absorption stays 0 without vitals absorption field");
+     }
+ 
++    /* ---- ItemBucket ray + journal state contract ------------------------- */
++    printf("case bucket-target: source, offsets, slot state, occlusion\n");
++    {
++        fill_flat(win);
++        PsvPlayer bucket;
++        spawn_at(&bucket, 24.5, 65.0, 24.5);
++        bucket.yaw = 0.0f; bucket.pitch = 0.0f; /* look toward +Z */
++        bucket.inv.current_item = 3;
++        isr_set_stack(&bucket.inv, 3, ic_mk(IC_BUCKET, 1, 0));
++        set_block_meta(win, 24, 66, 27, 9, 0); /* source water at eye ray */
++
++        GmBucketTarget bt;
++        gm_player_bucket_target_state(win, &st, &bucket, 1600, -3200, &bt);
++        CHECK(bt.block == 9 && bt.meta == 0,
++              "selected bucket reports metadata-zero water source");
++        CHECK(bt.wx == 1624 && bt.wy == 66 && bt.wz == -3173,
++              "bucket target exposes exact absolute source cell");
++        CHECK(bt.slot == 3, "bucket target exposes selected hotbar slot");
++
++        set_block_meta(win, 24, 66, 27, 9, 1); /* flowing water: transparent */
++        set_block_meta(win, 24, 66, 28, 11, 0); /* source lava behind it */
++        gm_player_bucket_target_state(win, &st, &bucket, 1600, -3200, &bt);
++        CHECK(bt.block == 11 && bt.wz == -3172,
++              "flowing liquid is transparent and source behind remains targetable");
++
++        set_block_meta(win, 24, 66, 26, 50, 3); /* wall torch intersects eye ray */
++        gm_player_bucket_target_state(win, &st, &bucket, 1600, -3200, &bt);
++        CHECK(bt.block == 0 && bt.slot == 3,
++              "selectable non-solid block occludes ItemBucket ray");
++
++        set_block_meta(win, 24, 66, 26, 0, 0);
++        isr_set_stack(&bucket.inv, 3, ic_mk(1, 1, 0));
++        gm_player_bucket_target_state(win, &st, &bucket, 1600, -3200, &bt);
++        CHECK(bt.block == 0 && bt.meta == 0 && bt.wx == 0 && bt.wy == 0 &&
++              bt.wz == 0 && bt.slot == -1,
++              "switching away publishes distinct inactive state with no stale target");
++    }
++
+     printf(g_fail ? "\nRESULT: FAIL\n" : "\nRESULT: PASS (all cases)\n");
+     free(win);
+     return g_fail;
+diff --git a/magma/game/test_randtick.sh b/magma/game/test_randtick.sh
+index f092d2e..ce7daae 100755
+--- a/magma/game/test_randtick.sh
++++ b/magma/game/test_randtick.sh
+@@ -4,12 +4,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o \
+-	game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
++	game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
+ 	world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_randtick.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+-	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o \
++	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o \
+ 	world/blocks.o world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o -lm -o game/test_randtick
+ ./game/test_randtick
+diff --git a/magma/game/test_route_e2e.sh b/magma/game/test_route_e2e.sh
+index 42a4ac2..1d587f2 100644
+--- a/magma/game/test_route_e2e.sh
++++ b/magma/game/test_route_e2e.sh
+@@ -5,13 +5,13 @@ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o \
+ 	game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o \
+ 	world/blocks.o world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_route_e2e.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+ 	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o \
+-	game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o \
++	game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o \
+ 	world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o \
+ 	-lm -o game/test_route_e2e
+diff --git a/magma/game/test_runtime.sh b/magma/game/test_runtime.sh
+index cccbb01..e7711f1 100644
+--- a/magma/game/test_runtime.sh
++++ b/magma/game/test_runtime.sh
+@@ -4,12 +4,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o \
+-	game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
++	game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o \
+ 	world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_runtime.c game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o \
+-	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o world/mesh_mc.o world/populate_mc.o \
++	game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o world/mesh_mc.o world/populate_mc.o \
+ 	world/blocks.o world/mesh.o world/world.o renderkernels/rk_31_facebakery_make_quad.o \
+ 	assets/blockmodels.o core/math.o core/shade.o -lm -o game/test_runtime
+ ./game/test_runtime
+diff --git a/magma/game/test_screen.sh b/magma/game/test_screen.sh
+index 9574f14..c3de186 100644
+--- a/magma/game/test_screen.sh
++++ b/magma/game/test_screen.sh
+@@ -5,14 +5,14 @@ BLAZE="$(cd "$ROOT/../blaze" && pwd)"
+ cd "$ROOT"
+ make game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o game/world_live.o game/live_sim.o game/randtick.o \
+ 	game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o \
+-	game/furnace_live.o game/chest_live.o game/container_live.o game/screen.o game/player_preview.o game/hud.o game/item_render.o game/caps.o core/config.o \
++	game/furnace_live.o game/chest_live.o game/container_live.o game/screen.o game/player_preview.o game/hud.o game/item_render.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o \
+ 	world/light.o world/mesh_mc.o world/populate_mc.o world/blocks.o world/mesh.o \
+ 	world/world.o renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o \
+ 	core/math.o core/shade.o cpu/raster_cpu.o
+ ${CC:-gcc} -O2 -ffp-contract=off -Wall -Wextra -I. -Icore -I"$BLAZE/core" \
+ 	game/test_screen.c game/screen.o game/player_preview.o game/hud.o game/item_render.o game/runtime.o game/fluid_live.o game/config.o game/player_ctl.o game/sel_box.o \
+ 	game/world_live.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o \
+-	game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o core/config.o world/light.o \
++	game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/caps.o game/rl_journal.o core/config.o world/gen_prefetch.o world/light.o \
+ 	world/mesh_mc.o world/populate_mc.o world/blocks.o world/mesh.o world/world.o \
+ 	renderkernels/rk_31_facebakery_make_quad.o assets/blockmodels.o core/math.o core/shade.o cpu/raster_cpu.o \
+ 	-lm -o game/test_screen

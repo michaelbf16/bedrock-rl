@@ -1,0 +1,107 @@
+diff --git a/blaze/core/items_tools_armor.h b/blaze/core/items_tools_armor.h
+--- a/blaze/core/items_tools_armor.h
++++ b/blaze/core/items_tools_armor.h
+@@ -145,6 +145,7 @@ MC_HD static inline int ita_block_harvest_tool(int block_id) {
+     if (block_id == BLK_STONE || block_id == BLK_COBBLESTONE || block_id == BLK_IRON_ORE
+         || block_id == BLK_COAL_ORE || block_id == BLK_OBSIDIAN || block_id == BLK_GOLD_ORE
+-        || block_id == BLK_DIAMOND_ORE || block_id == BLK_LAPIS_ORE)
++        || block_id == BLK_DIAMOND_ORE || block_id == BLK_LAPIS_ORE
++        || block_id == BLK_EMERALD_ORE)
+         return 1; /* pickaxe */
+     if (block_id == BLK_DIRT || block_id == BLK_GRASS || block_id == BLK_SAND)
+         return 2; /* shovel */
+@@ -155,6 +156,7 @@ MC_HD static inline int ita_block_harvest_level(int block_id) {
+     if (block_id == BLK_OBSIDIAN) return 3;
+     if (block_id == BLK_IRON_ORE || block_id == BLK_LAPIS_ORE) return 1;
+-    if (block_id == BLK_GOLD_ORE || block_id == BLK_DIAMOND_ORE) return 2;
++    if (block_id == BLK_GOLD_ORE || block_id == BLK_DIAMOND_ORE
++        || block_id == BLK_EMERALD_ORE) return 2;
+     if (block_id == BLK_STONE || block_id == BLK_COBBLESTONE || block_id == BLK_COAL_ORE) return 0;
+     return 0;
+ }
+@@ -170,5 +172,6 @@ MC_HD static inline int ita_pickaxe_can_harvest(int mat, int block_id) {
+     if (block_id == BLK_OBSIDIAN) return hl == 3;
+     if (block_id == BLK_DIAMOND_ORE || block_id == 57) return hl >= 2;
++    if (block_id == BLK_EMERALD_ORE) return hl >= 2;
+     if (block_id == BLK_GOLD_ORE || block_id == 41) return hl >= 2;
+     if (block_id == BLK_IRON_ORE || block_id == 42) return hl >= 1;
+     if (block_id == BLK_LAPIS_ORE || block_id == 21) return hl >= 1;
+diff --git a/blaze/core/player_break.h b/blaze/core/player_break.h
+--- a/blaze/core/player_break.h
++++ b/blaze/core/player_break.h
+@@ -64,6 +64,7 @@ MC_HD static inline int pb_requires_tool(int block_id) {
+     if (block_id == BLK_STONE || block_id == BLK_COBBLESTONE || block_id == BLK_IRON_ORE
+         || block_id == BLK_COAL_ORE || block_id == BLK_GOLD_ORE || block_id == BLK_DIAMOND_ORE
+-        || block_id == BLK_OBSIDIAN || block_id == BLK_LAPIS_ORE || block_id == 73 || block_id == 74)
++        || block_id == BLK_OBSIDIAN || block_id == BLK_LAPIS_ORE
++        || block_id == BLK_EMERALD_ORE || block_id == 73 || block_id == 74)
+         return 1;
+     return 0;
+ }
+diff --git a/blaze/env/blaze_core.h b/blaze/env/blaze_core.h
+--- a/blaze/env/blaze_core.h
++++ b/blaze/env/blaze_core.h
+@@ -944,6 +944,7 @@ MC_HD static inline void cu_harvest_drop(int block_id, int block_meta, int tool_
+         case 49: *item = 49; *count = 1; break;
+         case 54: *item = 54; *count = 1; break; /* chest block item */
+         case 56: *item = 264; *count = 1; break;
++        case 129: *item = 388; *count = 1; break; /* emerald ore -> emerald */
+         default: break;
+     }
+ }
+diff --git a/magma/game/player_ctl.c b/magma/game/player_ctl.c
+--- a/magma/game/player_ctl.c
++++ b/magma/game/player_ctl.c
+@@ -274,6 +274,7 @@ static void harvest_drop(int block_id, int block_meta, int tool_id,int wx,int wy
+         case 49: *item = 49; *count = 1; break; /* obsidian */
+         case 54: *item = 54; *count = 1; break; /* chest block item */
+         case 56: *item = 264; *count = 1; break;/* diamond ore -> diamond */
++        case 129: *item = 388; *count = 1; break;/* emerald ore -> emerald */
+         default: break;
+     }
+ }
+diff --git a/magma/game/test_player_ctl.c b/magma/game/test_player_ctl.c
+--- a/magma/game/test_player_ctl.c
++++ b/magma/game/test_player_ctl.c
+@@ -221,5 +221,41 @@ int main(void)
+           "log2 harvest emits one matching metadata-preserving item");
+ 
++    /* Emerald ore is generated in extreme-hills tunnels. It requires an
++     * iron-tier pickaxe, uses normal ore hardness, and drops an emerald. */
++    printf("case B3: emerald ore uses iron-pick speed and harvest drop\n");
++    fill_flat(win);
++    PsvPlayer emerald_player;
++    PvStats emerald_stats; pv_init(&emerald_stats);
++    spawn_at(&emerald_player, 24.5, 65.0, 24.5);
++    set_block_meta(win, 24, 64, 24, 129, 0);
++    isr_set_stack(&emerald_player.inv, 0, ic_mk(257 /* iron pick */, 1, 0));
++    emerald_player.inv.current_item = 0;
++    emerald_player.pitch = 89.0f;
++    gm_player_dig_reset();
++
++    GmAction emerald_break;
++    memset(&emerald_break, 0, sizeof emerald_break);
++    emerald_break.attack = 1;
++    GmBlockEdit emerald_edit = {0};
++    int emerald_break_tick = -1;
++    for (int t = 0; t < 80; ++t) {
++        GmBlockEdit edits[8];
++        int nedits = 0;
++        gm_player_tick((struct Chunk *)win, (struct McSinTable *)&st,
++                       (struct PsvPlayer *)&emerald_player,
++                       (struct PvStats *)&emerald_stats,
++                       emerald_break, 0, 0, 0, edits, &nedits, 8);
++        if (nedits == 1 && edits[0].id == 0) {
++            emerald_edit = edits[0];
++            emerald_break_tick = t;
++            break;
++        }
++    }
++    CHECK(emerald_break_tick >= 0 && emerald_break_tick < 40,
++          "iron pick breaks emerald ore at effective-tool speed");
++    CHECK(emerald_edit.drop_id == 388 && emerald_edit.drop_count == 1,
++          "emerald ore harvest emits one emerald item");
++
+     /* ---------------- (C) UNDERWATER DIG PENALTY ---------------- */
+     /* EntityPlayer.getDigSpeed: eye inside water without aqua affinity divides
+      * dig speed by 5 (again by 5 if airborne). Iron pick vs stone is ~8 ticks

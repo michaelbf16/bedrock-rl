@@ -1,0 +1,12 @@
+diff --git a/blaze/core/items_tools_armor.h b/blaze/core/items_tools_armor.h
+index f8ec6c2..d09252f 100644
+--- a/blaze/core/items_tools_armor.h
++++ b/blaze/core/items_tools_armor.h
+@@ -162,7 +162,6 @@ MC_HD static inline int ita_block_harvest_level(int block_id) {
+ 
+ MC_HD static inline int ita_block_is_tool_effective(int block_id, const char *tool_class) {
+     if (tool_class[0] != 'p') return 0;
+-    if (block_id == BLK_OBSIDIAN || block_id == 73 || block_id == 74) return 0; /* obsidian/redstone ore */
+     return ita_block_harvest_tool(block_id) == 1;
+ }
+ 

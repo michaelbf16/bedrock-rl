@@ -1,0 +1,19 @@
+schema_version: 1
+task: task.yaml
+model:
+  type: tests.fixtures.tiny_task.components:ScriptedModel
+tools:
+  - type: tests.fixtures.tiny_task.components:IncrementTool
+context:
+  - type: bedrock_rl.core.context:KeepLastTurns
+    count: 2
+guidance:
+  provider:
+    type: tests.fixtures.tiny_task.components:DemoGuidance
+  static_level: brief
+  dynamic_level: progress
+probes:
+  - type: tests.fixtures.tiny_task.components:CounterProbe
+max_turns: 4
+output: ../../../../outputs/tiny_trajectory.json
+provenance: {fixture: tiny_task}

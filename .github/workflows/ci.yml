@@ -1,0 +1,238 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.3"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  cpu:
+    name: lock, lint, import, build, tasks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: the lockfile is current
+        run: uv sync --locked
+
+      - name: ruff
+        run: uv run --with ruff==0.15.0 ruff check .
+
+      # The package root must remain lightweight, and the CLI must start in
+      # the base environment. Unit tests below import the concrete framework,
+      # Minecraft, launch, and data-generation modules. Training modules are
+      # exercised in the pinned verl job because torch is an optional extra.
+      - name: the package imports, and the CLI starts
+        run: |
+          uv run python -c "import bedrock_rl"
+          uv run bedrock --help > /dev/null
+
+      - name: unit tests
+        run: uv run --extra netherite python -m unittest discover -s tests
+
+      - name: Matplotlib evaluation charts
+        run: uv run --extra plot python -m unittest tests.test_evaluation
+
+      # Torch is optional at runtime, but trainer math is not optional in
+      # CI. Install the pinned CPU wheel after the lightweight-import check
+      # and run every formerly torch-gated regression with no silent skips.
+      - name: standalone trainer math on CPU torch
+        run: |
+          uv pip install --torch-backend=cpu torch==2.9.0
+          uv run --no-sync python -m unittest \
+            tests.test_self_distillation \
+            tests.test_sampled_tokens \
+            tests.test_trajectory_sft_writer
+
+      - name: the wheel builds
+        run: uv build
+
+      - name: the wheel's metadata is valid
+        run: uv run --with twine twine check dist/*
+
+      - name: an isolated wheel validates user-owned configs
+        run: |
+          uv venv /tmp/bedrock-wheel
+          uv pip install --python /tmp/bedrock-wheel/bin/python \
+            dist/bedrock_rl-*.whl
+          /tmp/bedrock-wheel/bin/bedrock models resolve qwen3-vl-2b \
+            >/dev/null
+          /tmp/bedrock-wheel/bin/bedrock task validate \
+            "$GITHUB_WORKSPACE/examples/equip_pickaxe_grpo/task.yaml"
+          /tmp/bedrock-wheel/bin/bedrock generate \
+            "$GITHUB_WORKSPACE/examples/equip_pickaxe_grpo/data.yaml" --check
+          /tmp/bedrock-wheel/bin/bedrock train \
+            "$GITHUB_WORKSPACE/examples/equip_pickaxe_grpo/train.yaml" \
+            --dry-run
+
+      - name: every shipped task still loads
+        run: uv run bedrock task validate
+
+  docker-cpu:
+    name: CPU image builds and starts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the publishable CPU runtime
+        run: |
+          NETHERITE_SHA="$(cat patches/netherite/PINNED_SHA)"
+          docker build --target cpu \
+            --build-arg NETHERITE_SHA="$NETHERITE_SHA" \
+            -t bedrock-rl:cpu .
+      - name: verify the engine and documented read-only CLI path
+        run: |
+          docker run --rm bedrock-rl:cpu
+          docker run --rm --user 65532:65532 bedrock-rl:cpu
+          docker run --rm bedrock-rl:cpu \
+            bedrock task validate examples/equip_pickaxe_grpo/task.yaml
+          docker run --rm bedrock-rl:cpu \
+            bedrock generate examples/equip_pickaxe_grpo/data.yaml --check
+
+  engine:
+    name: the engine and the trainer, built at their pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: the engine's build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libsdl2-dev pkg-config xxd unzip
+
+      # What this proves is that every diff in patches/netherite/ still
+      # applies at PINNED_SHA and that the result compiles. That is a
+      # property of THIS repo and not of upstream, since the SHA is
+      # pinned: a PR that edits a diff, adds one or moves the pin is the
+      # only thing that can turn it red.
+      - name: build the engine at the pin, with stub atlases
+        env:
+          FLASH_ATTN: "0"
+          NETHERITE_HOME: ${{ github.workspace }}/netherite
+          VERL_ENV: ${{ github.workspace }}/verl-env
+        run: |
+          uv sync --locked
+          NETHERITE_SHA="$(cat patches/netherite/PINNED_SHA)"
+          git clone https://github.com/Infatoshi/netherite.git "$NETHERITE_HOME"
+          git -C "$NETHERITE_HOME" checkout -q --detach "$NETHERITE_SHA"
+          for d in "$GITHUB_WORKSPACE"/patches/netherite/*.diff; do
+            git -C "$NETHERITE_HOME" apply "$d"
+          done
+          uv run --with pillow python tools/stub_atlases.py \
+            --netherite-home "$NETHERITE_HOME"
+          make -C "$NETHERITE_HOME/magma" game
+
+      # The one place CI starts the game. The smoke command drives eight
+      # scripted-oracle episodes and reads reward directly from each live
+      # Episode. A binary that builds but cannot be controlled, or a reward
+      # path that diverges from its episode, therefore fails here.
+      - name: an oracle sweep against the binary just built
+        env:
+          NETHERITE_HOME: ${{ github.workspace }}/netherite
+          SDL_VIDEODRIVER: dummy
+        run: uv run python -m bedrock_rl.cli.smoke examples/equip_pickaxe_grpo/task.yaml
+
+      # This live engine test mines a natural gravel cell selected by the
+      # coordinate rule and requires the collected drop to be flint. Together
+      # with tests.test_world_planning's fixed Python golden coordinates, it
+      # pins the planner/engine harvest boundary instead of testing a second
+      # Python copy of the planner formula.
+      - name: live deterministic harvest contract
+        env:
+          NETHERITE_HOME: ${{ github.workspace }}/netherite
+        run: bash "$NETHERITE_HOME/magma/game/test_route_e2e.sh"
+
+      # verl at the SHA bin/setup_deps.sh pins, with every diff in
+      # patches/verl/ applied and then reverse-checked, which is what
+      # catches a diff that applies to something other than what it was
+      # written against. The heavy stack is installed CPU-only and by
+      # hand: the `train` extra resolves to the accelerator wheel set,
+      # several gigabytes of CUDA no runner can use, and none of it is
+      # needed to answer whether verl can import this repo's custom loop.
+      # The transformers version is read out of the direct-pin manifest
+      # rather than resolved to whatever is newest, so
+      # the import happens against the version the trainer runs and not
+      # against somebody else's release day. torchvision comes along
+      # because a modern processor's video half imports it eagerly.
+      - name: verl at the pin, CPU only, and the custom loop imports
+        env:
+          VERL_HOME: ${{ github.workspace }}/verl
+        run: |
+          TRANSFORMERS="$(sed -n \
+            's/^transformers==\([0-9][0-9.]*\)$/\1/p' \
+            requirements/verl-runtime.txt | head -1)"
+          test -n "$TRANSFORMERS"
+          uv pip install --torch-backend=cpu \
+            torch==2.9.0 torchvision==0.24.0 \
+            "transformers==$TRANSFORMERS" accelerate==1.14.0
+          VERL_SHA="$(sed -n 's/^VERL_SHA=\([0-9a-f]\{40\}\)$/\1/p' \
+            bin/setup_deps.sh)"
+          test -n "$VERL_SHA"
+          git init -q "$VERL_HOME"
+          git -C "$VERL_HOME" remote add origin \
+            https://github.com/volcengine/verl.git
+          git -C "$VERL_HOME" fetch -q --depth 1 origin "$VERL_SHA"
+          git -C "$VERL_HOME" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$VERL_HOME" rev-parse HEAD)" = "$VERL_SHA"
+          for d in "$GITHUB_WORKSPACE"/patches/verl/*.diff; do
+            git -C "$VERL_HOME" apply "$d"
+            git -C "$VERL_HOME" apply --reverse --check "$d"
+          done
+          uv pip install --torch-backend=cpu \
+            tensordict==0.13.0 ray==2.56.1 omegaconf==2.3.1 \
+            hydra-core==1.3.5 pydantic==2.13.4 codetiming==1.4.0 \
+            datasets==5.0.1 cachetools==7.0.0 \
+            uvicorn==0.40.0 fastapi==0.128.0
+          uv pip install --no-deps -e "$VERL_HOME"
+          uv run --no-sync python -c \
+            "from bedrock_rl.adapters.verl.agent_loop import NetheriteAgentLoop"
+          uv run --no-sync python -m unittest \
+            tests.test_consistency_regressions \
+            tests.test_verl_agent_loop_contract \
+            tests.test_verl_distillation_contract \
+            tests.test_verl_padding_contract
+
+  docker-gpu:
+    name: GPU training image builds at every pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: make room for CUDA wheels
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          docker system prune --all --force
+      - name: build the complete pinned training runtime
+        run: |
+          NETHERITE_SHA="$(cat patches/netherite/PINNED_SHA)"
+          docker build --target gpu \
+            --build-arg NETHERITE_SHA="$NETHERITE_SHA" \
+            -t bedrock-rl:gpu .

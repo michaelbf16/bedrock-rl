@@ -1,0 +1,1149 @@
+diff --git a/magma/Makefile b/magma/Makefile
+index 479bcf6..cda491e 100644
+--- a/magma/Makefile
++++ b/magma/Makefile
+@@ -36,7 +36,7 @@ OBJ_ASSETS = assets/blockmodels.o
+
+ # seam: playable game (verified blaze player/world tick + magma render + HUD + mobs)
+ OBJ_GAME = game/config.o game/input_map.o game/world_live.o game/player_ctl.o game/hud.o game/screen.o game/player_preview.o game/entity_render.o game/particles_live.o game/item_render.o \
+-           game/sky.o game/caps.o game/hand.o game/timer.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/runtime.o game/frame_capture.o game/window_compose.o game/script.o game/rl_mode.o game/overlay.o game/overlay_live.o game/sel_box.o game/fluid_live.o game/underwater.o
++           game/sky.o game/caps.o game/hand.o game/timer.o game/live_sim.o game/randtick.o game/mob_live.o game/dragon_live.o game/structures_live.o game/portal_live.o game/furnace_live.o game/chest_live.o game/container_live.o game/runtime.o game/frame_capture.o game/window_compose.o game/script.o game/rl_mode.o game/rl_journal.o game/overlay.o game/overlay_live.o game/sel_box.o game/fluid_live.o game/underwater.o
+
+ .PHONY: all demo world game game-cuda game-metal test test-game test-launch test-config test-block-registry test-particles-live clean cuda test-raster-parity test-fog-radial
+ all: demo
+diff --git a/magma/game/container_live.c b/magma/game/container_live.c
+index db816ff..41e8d45 100644
+--- a/magma/game/container_live.c
++++ b/magma/game/container_live.c
+@@ -5,6 +5,7 @@
+  * verified cc_* helpers from blaze container_click.h; furnace/chest mutation
+  * goes through the live wrappers. */
+ #include "game/container_live.h"
++#include "game/rl_journal.h"      /* [bedrock-rl] the event journal */
+ #include "game/runtime.h"
+
+ #include "container_click.h"
+@@ -112,6 +113,13 @@ static ICStack ct_furnace_get(const GmRuntime *r, int s)
+ static void ct_drop(GmRuntime *r, ICStack s)
+ {
+     if (cc_is_empty(&s)) return;
++    /* [bedrock-rl] journal: everything a container throws on the floor.
++     * That is the explicit toss, the cursor dropped outside the window,
++     * and whatever did not fit back into the inventory when the screen
++     * closed. Distinguished from a harvest drop by the cause slot,
++     * because "mined it" and "threw it away" are different answers. */
++    rlj_emit(RLJ_ITEM_DROPPED, s.item, s.count, s.meta,
++             RLJ_DROP_CONTAINER, 0, 0);
+     /* Keep StoredEnchantments on EntityItem (do not strip to item/count/meta). */
+     gm_live_spawn_stack(&r->entities,
+                         r->player.ent.posX + (double)r->ox,
+@@ -150,6 +158,25 @@ ICStack gm_container_result(const struct GmRuntime *r)
+ /* SlotCrafting.onTake: consume one item from every non-empty grid cell. */
+ static void grid_consume_one(GmRuntime *r)
+ {
++    /* [bedrock-rl] journal: the GUI craft.
++     *
++     * This function is called from all three ways a result leaves the
++     * grid, and from nothing else: the plain click on the result slot,
++     * the shift-click quick move, and the throw. Emitting HERE rather
++     * than at those three sites means a fourth one, if the engine ever
++     * grows it, is journalled without anybody remembering to. The result
++     * has to be read before the grid is consumed, which is why the call
++     * is the first statement and not the last.
++     *
++     * A shift-click repeats the take until the grid runs dry, so one
++     * click can legitimately produce several of these. That is the
++     * vanilla semantic and the journal reports it as it happened. */
++    if (rlj_enabled) {
++        ICStack res = grid_match(r);
++        if (!cc_is_empty(&res))
++            rlj_emit(RLJ_ITEM_CRAFTED, res.item, res.count, res.meta,
++                     r->container == 1 ? 3 : 2, RLJ_CRAFT_GUI, 0);
++    }
+     for (int i = 0; i < 9; ++i)
+         if (!cc_is_empty(&r->craft_grid[i]))
+             cc_shrink(&r->craft_grid[i], 1);
+diff --git a/magma/game/live_sim.c b/magma/game/live_sim.c
+index 457dc6f..9f77b53 100644
+--- a/magma/game/live_sim.c
++++ b/magma/game/live_sim.c
+@@ -1,5 +1,6 @@
+ /* game/live_sim.c - minimal live entities + plant plot (composition side effects). */
+ #include "game/live_sim.h"
++#include "game/rl_journal.h"   /* [bedrock-rl] the event journal */
+ #include "items_core.h"
+ #include "inventory_stack_rules.h"
+ #include "player_survival.h"
+@@ -427,7 +428,19 @@ void gm_live_tick_player(GmLiveSim *s, GmWorld *w, struct PsvPlayer *pl_,
+                 incoming.enchants[j].id = e->ench_id[j];
+                 incoming.enchants[j].level = e->ench_lvl[j];
+             }
++            int took = e->count;
+             isr_add_item_stack_to_inventory(&pl->inv, &incoming);
++            /* [bedrock-rl] journal: an item collected off the ground.
++             * The count is the amount that ACTUALLY landed in the
++             * inventory, because isr_add_item_stack_to_inventory writes
++             * the leftover back into `incoming` and a full inventory
++             * takes only part of a stack. Emitted before e->count is
++             * overwritten on the next line. This is the event that lets
++             * a task tell mining a log from finding one. */
++            took -= incoming.count;
++            if (took > 0)
++                rlj_emit(RLJ_ITEM_PICKED_UP, e->item, took, e->meta,
++                         (int)e->x, (int)e->y, (int)e->z);
+             e->count = incoming.count;
+             /* leftover retains the same StoredEnchantments payload */
+             if (e->count <= 0) {
+diff --git a/magma/game/player_ctl.c b/magma/game/player_ctl.c
+index 8b9736b..1780757 100644
+--- a/magma/game/player_ctl.c
++++ b/magma/game/player_ctl.c
+@@ -198,20 +198,33 @@ static int eye_in_water(const Chunk *w, const PsvPlayer *pl) {
+
+ static int bucket_raycast(const Chunk *w,const McSinTable *st,const PsvPlayer *pl,
+                           int *hx,int *hy,int *hz){
+-    float f=mc_cos(st,-pl->yaw*0.017453292f-3.1415927f);
+-    float f1=mc_sin(st,-pl->yaw*0.017453292f-3.1415927f);
+-    float f2=-mc_cos(st,-pl->pitch*0.017453292f),f3=mc_sin(st,-pl->pitch*0.017453292f);
+-    double dx=(double)(f1*f2),dy=(double)f3,dz=(double)(f*f2);
+-    double ex=pl->ent.posX,ey=pl->ent.posY+psv_player_eye_height(pl),ez=pl->ent.posZ;
+-    int lx=mc_floor(ex),ly=mc_floor(ey),lz=mc_floor(ez);
+-    for(double t=PSV_RAY_DT;t<=PSV_REACH;t+=PSV_RAY_DT){
+-        int x=mc_floor(ex+dx*t),y=mc_floor(ey+dy*t),z=mc_floor(ez+dz*t);
+-        if(x==lx&&y==ly&&z==lz)continue;
+-        lx=x;ly=y;lz=z;
+-        int id=psv_get_block(w,x,y,z),meta=psv_get_meta(w,x,y,z);
+-        if((id==8||id==9||id==10||id==11)&&meta==0){*hx=x;*hy=y;*hz=z;return id;}
+-        if(psv_solid(id))return 0;
+-    }return 0;
++    return gm_raycast_bucket(w, st, pl, PSV_REACH, hx, hy, hz);
++}
++
++int gm_player_bucket_target(const Chunk *w, const McSinTable *st,
++                            const PsvPlayer *pl, int *hx, int *hy, int *hz,
++                            int *meta) {
++    int id = bucket_raycast(w, st, pl, hx, hy, hz);
++    if (meta) *meta = id ? psv_get_meta(w, *hx, *hy, *hz) : 0;
++    return id;
++}
++
++void gm_player_bucket_target_state(const Chunk *w, const McSinTable *st,
++                                   const PsvPlayer *pl, int ox, int oz,
++                                   GmBucketTarget *out) {
++    int bx, by, bz, meta = 0;
++    int hot = pl->inv.current_item;
++    ICStack held = isr_get_stack(&pl->inv, hot);
++    out->block = out->wx = out->wy = out->wz = out->meta = 0;
++    out->slot = -1;
++    if (held.item != IC_BUCKET || held.count <= 0) return;
++    out->slot = hot;
++    out->block = gm_player_bucket_target(w, st, pl, &bx, &by, &bz, &meta);
++    if (!out->block) return;
++    out->wx = bx + ox;
++    out->wy = by;
++    out->wz = bz + oz;
++    out->meta = meta;
+ }
+
+ static void emit_edit(GmBlockEdit *edits, int *ne, int max_edits,
+@@ -256,6 +269,7 @@ static void harvest_drop(int block_id, int block_meta, int tool_id,int wx,int wy
+         case 15: *item = 15; *count = 1; break; /* iron ore -> ore block */
+         case 16: *item = 263; *count = 1; break;/* coal ore -> coal */
+         case 17: *item = 17; *count = 1; *meta = block_meta & 3; break;
++        case 162: *item = 162; *count = 1; *meta = block_meta & 1; break;
+         case 49: *item = 49; *count = 1; break; /* obsidian */
+         case 54: *item = 54; *count = 1; break; /* chest block item */
+         case 56: *item = 264; *count = 1; break;/* diamond ore -> diamond */
+diff --git a/magma/game/player_ctl.h b/magma/game/player_ctl.h
+index 90035ba..e33c036 100644
+--- a/magma/game/player_ctl.h
++++ b/magma/game/player_ctl.h
+@@ -44,6 +44,24 @@ void gm_player_inv_click(struct PsvPlayer *pl, int slot_id, int button, int clic
+ ICStack gm_player_cursor(void);
+ void gm_player_cursor_set(ICStack s);
+ void gm_player_dig_reset(void);
++/* Exact ItemBucket ray used when an empty bucket is selected. Liquids at
++ * source level (metadata zero) are hits, other liquids are transparent, and
++ * any selectable block hit first occludes the source. Returns the source
++ * block id or zero; coordinates are window-local and `meta` is optional. */
++int gm_player_bucket_target(const Chunk *window,
++                            const McSinTable *st,
++                            const PsvPlayer *pl,
++                            int *lx, int *ly, int *lz, int *meta);
++typedef struct {
++    int block, wx, wy, wz, meta, slot;
++} GmBucketTarget;
++/* State used by the RL journal's edge latch. Coordinates are absolute in the
++ * world frame. A selected empty bucket with no source keeps its slot and zero
++ * target; any other held item produces the distinct inactive slot=-1 state. */
++void gm_player_bucket_target_state(const Chunk *window,
++                                   const McSinTable *st,
++                                   const PsvPlayer *pl,
++                                   int ox, int oz, GmBucketTarget *out);
+ /* Apply an authoritative SPacketEntityVelocity and supersede any locally
+  * inferred damage-packet reset queued for this tick. */
+ void gm_player_set_packet_velocity(struct PsvPlayer *pl, double x, double y, double z);
+diff --git a/magma/game/rl_journal.c b/magma/game/rl_journal.c
+new file mode 100644
+index 0000000..fe308d3
+--- /dev/null
++++ b/magma/game/rl_journal.c
+@@ -0,0 +1,220 @@
++/* [bedrock-rl] game/rl_journal.c - buffer, stamp and write the event
++ * journal. See game/rl_journal.h for what the journal is and how to add
++ * an event type.
++ *
++ * The channel is a file descriptor named by MAGMA_JOURNAL_FD, and it is
++ * deliberately NOT stdout. stdout carries RlBinObs, whose bytes are
++ * frozen and checked, and whose reader resynchronises on a four-byte
++ * magic; a journal record that happened to contain those four bytes
++ * would be parsed as an observation. Unset the variable and every
++ * function here is a predicate test that writes nothing, which is the
++ * default for every process that does not ask for a journal.
++ *
++ * Records for one tick are buffered and written as a SINGLE write() at
++ * the tick boundary, before that tick's observation. The harness reads
++ * the observation and then drains this fd, so a reader that has just
++ * read observation N already has every record for tick N. That ordering
++ * is the whole synchronisation protocol; there is no other handshake.
++ */
++#include <errno.h>
++#include <math.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "game/rl_journal.h"
++
++int rlj_enabled = 0;
++
++static int rlj_fd = -1;
++static RlJrnRec rlj_buf[RLJ_MAX_PER_TICK];
++static int rlj_n;
++static int rlj_dropped;
++
++/* per-episode latches for the edge-triggered samplers */
++static int rlj_aim_block = -1;
++static int rlj_aim_valid;
++static double rlj_path;            /* accumulated horizontal path, blocks */
++static double rlj_px, rlj_pz;
++static int rlj_path_valid;
++static long long rlj_path_whole;
++static int rlj_health = -1, rlj_food = -1;
++static int rlj_vitals_valid;
++
++static void rlj_init_latches(void)
++{
++    rlj_n = 0;
++    rlj_dropped = 0;
++    rlj_aim_block = -1;
++    rlj_aim_valid = 0;
++    rlj_path = 0.0;
++    rlj_path_whole = 0;
++    rlj_path_valid = 0;
++    rlj_px = rlj_pz = 0.0;
++    rlj_health = rlj_food = -1;
++    rlj_vitals_valid = 0;
++}
++
++void rlj_emit_flags_(int type, unsigned flags,
++                     int a, int b, int c, int d, int e, int f)
++{
++    RlJrnRec *rec;
++    if (rlj_n >= RLJ_MAX_PER_TICK) {
++        ++rlj_dropped;
++        return;
++    }
++    rec = &rlj_buf[rlj_n++];
++    rec->type = (unsigned short)type;
++    rec->flags = (unsigned short)flags;
++    rec->tick = 0;                 /* stamped in rlj_flush */
++    rec->v[0] = a; rec->v[1] = b; rec->v[2] = c;
++    rec->v[3] = d; rec->v[4] = e; rec->v[5] = f;
++}
++
++void rlj_emit_(int type, int a, int b, int c, int d, int e, int f)
++{
++    rlj_emit_flags_(type, 0, a, b, c, d, e, f);
++}
++
++static int rlj_write_all(const void *p, size_t n)
++{
++    const char *b = (const char *)p;
++    while (n > 0) {
++        ssize_t w = write(rlj_fd, b, n);
++        if (w < 0) {
++            if (errno == EINTR)
++                continue;
++            /* The reader is gone or the fd is unusable. Stop trying
++             * rather than take the simulation down with it: the journal
++             * is an observation channel and must never be able to end an
++             * episode that would otherwise have run. */
++            rlj_enabled = 0;
++            rlj_fd = -1;
++            return 0;
++        }
++        b += w;
++        n -= (size_t)w;
++    }
++    return 1;
++}
++
++void rlj_open(void)
++{
++    const char *e = getenv("MAGMA_JOURNAL_FD");
++    RlJrnHead h;
++    char *end;
++    long fd;
++
++    rlj_enabled = 0;
++    rlj_fd = -1;
++    rlj_init_latches();
++    if (!e || !*e)
++        return;
++    fd = strtol(e, &end, 10);
++    if (*end || fd < 0 || fd > 1 << 20)
++        return;
++    rlj_fd = (int)fd;
++    rlj_enabled = 1;
++    h.magic = RLJ_MAGIC;
++    h.version = RLJ_VERSION;
++    h.rec_bytes = (unsigned short)sizeof(RlJrnRec);
++    (void)rlj_write_all(&h, sizeof h);
++}
++
++void rlj_flush(int tick)
++{
++    int i;
++    if (!rlj_enabled) {
++        rlj_n = 0;
++        rlj_dropped = 0;
++        return;
++    }
++    if (rlj_dropped) {
++        /* Never silent. The cap exists so one pathological tick cannot
++         * fill the pipe and deadlock the engine against the harness, and
++         * a task whose reward depended on a dropped record must be able
++         * to see that it did. */
++        rlj_buf[RLJ_MAX_PER_TICK - 1].type = RLJ_OVERFLOW;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].flags = 0;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].v[0] = rlj_dropped;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].v[1] = 0;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].v[2] = 0;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].v[3] = 0;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].v[4] = 0;
++        rlj_buf[RLJ_MAX_PER_TICK - 1].v[5] = 0;
++        rlj_dropped = 0;
++    }
++    if (rlj_n <= 0)
++        return;
++    for (i = 0; i < rlj_n; ++i)
++        rlj_buf[i].tick = tick;
++    (void)rlj_write_all(rlj_buf, (size_t)rlj_n * sizeof rlj_buf[0]);
++    rlj_n = 0;
++}
++
++/* ---- edge-triggered samplers --------------------------------------- */
++
++void rlj_sample_aim(int block, int dist_q4)
++{
++    int was = rlj_aim_valid ? rlj_aim_block : -1;
++    if (!rlj_enabled)
++        return;
++    if (rlj_aim_valid && block == rlj_aim_block)
++        return;
++    rlj_aim_block = block;
++    rlj_aim_valid = 1;
++    rlj_emit(RLJ_AIMED_AT, block, dist_q4, 0, was, 0, 0);
++}
++
++/* Horizontal PATH length, accumulated per tick, which is what makes it a
++ * distance travelled rather than a displacement from the start. An agent
++ * that walks out and back has a displacement of zero and a path of
++ * twice the trip.
++ *
++ * An event per tick would not be sparse, so this fires only when the
++ * accumulated path crosses a whole block. A check therefore reads the
++ * distance floored to whole blocks, which never over-reports.
++ *
++ * The accumulation is plain double arithmetic over a deterministic
++ * sequence of positions, and the engine builds with -ffp-contract=off,
++ * so a replay reproduces the same sum bit for bit. */
++void rlj_sample_path(double wx, double wz)
++{
++    double dx, dz;
++    if (!rlj_path_valid) {
++        rlj_px = wx;
++        rlj_pz = wz;
++        rlj_path_valid = 1;
++        return;
++    }
++    dx = wx - rlj_px;
++    dz = wz - rlj_pz;
++    rlj_px = wx;
++    rlj_pz = wz;
++    rlj_path += sqrt(dx * dx + dz * dz);
++    while ((double)(rlj_path_whole + 1) <= rlj_path) {
++        ++rlj_path_whole;
++        rlj_emit(RLJ_TRAVELLED, (int)rlj_path_whole,
++                 (int)(rlj_path * 1000.0), 0, 0, 0, 0);
++    }
++}
++
++/* Unlike the aim sampler, this does NOT report its baseline. Full health
++ * at the start of an episode is a starting condition and not something
++ * that happened, and a task shaping on "took damage" would otherwise
++ * fire on tick zero of every episode. The aim sampler does report its
++ * first value, because "the crosshair was on a log" is true at t0 in the
++ * same sense it is true later, and a check for it should not depend on
++ * the agent having panned away and back. */
++void rlj_sample_vitals(int health, int food)
++{
++    int wh = rlj_health, wf = rlj_food;
++    int first = !rlj_vitals_valid;
++    if (!first && health == rlj_health && food == rlj_food)
++        return;
++    rlj_vitals_valid = 1;
++    rlj_health = health;
++    rlj_food = food;
++    if (!first)
++        rlj_emit(RLJ_VITALS_CHANGED, health, food, 0, wh, wf, 0);
++}
+diff --git a/magma/game/rl_journal.h b/magma/game/rl_journal.h
+new file mode 100644
+index 0000000..66c0176
+--- /dev/null
++++ b/magma/game/rl_journal.h
+@@ -0,0 +1,171 @@
++/* [bedrock-rl] game/rl_journal.h - the typed event journal.
++ *
++ * WHY THIS EXISTS. The observation record (RlBinObs) is a SNAPSHOT. A
++ * snapshot can say "the inventory holds a crafting table"; it cannot say
++ * whether that table was crafted, picked up off the ground, taken from a
++ * chest, or restored with the start state. It also cannot express order,
++ * so "mined a log and THEN crafted planks from it" is not a question a
++ * snapshot answers. The journal is the missing half: a sequence of typed
++ * state transitions, stamped with the tick they happened on, in the order
++ * the engine performed them.
++ *
++ * WHAT IT IS NOT. It is not a state dump. Every record here is edge
++ * triggered, so a tick on which nothing happens costs one predicate test
++ * and writes nothing at all. Two of the records look per-tick and are
++ * not: RLJ_AIMED_AT fires when the block under the crosshair CHANGES, and
++ * RLJ_TRAVELLED fires when the accumulated path length crosses a whole
++ * block.
++ *
++ * THE CHANNEL. Records go to their own file descriptor, named by
++ * MAGMA_JOURNAL_FD, and never to stdout. RlBinObs is byte-frozen and
++ * several things depend on that, so the journal is not allowed to share
++ * the stream that carries it. The Python decoder and event schema live in
++ * bedrock_rl/env/journal.py.
++ *
++ * DETERMINISM. Every field of every record is a function of the world and
++ * the action sequence. Nothing here reads a clock, a frame, or anything
++ * a rendering-disabled environment does not do. That is a hard requirement, not
++ * a nice property: reward is computed by replaying a trajectory frameless
++ * through the same episode class, so a journal that did not regenerate
++ * identically would make the trainer score a trajectory differently from
++ * the episode that earned it.
++ *
++ * ---------------------------------------------------------------------
++ * ADDING AN EVENT TYPE
++ * ---------------------------------------------------------------------
++ * 1. Add a row to the enum below, with its six payload slot names in the
++ *    comment. That comment is the payload contract.
++ * 2. Call rlj_emit() at the place in the engine where the transition
++ *    happens.
++ * 3. Add the matching row to bedrock_rl/journal.py::EVENTS.
++ * Task authors then use it from YAML with no further Python.
++ *
++ * The payload is six untyped int slots rather than a struct per event.
++ * That costs compile-time checking on this side and buys a decoder and a
++ * check factory on the Python side that are uniform, so an event type is
++ * a table row in both files instead of a new code path in either.
++ */
++#ifndef MAGMA_GAME_RL_JOURNAL_H
++#define MAGMA_GAME_RL_JOURNAL_H
++
++/* ---- THE EVENT TABLE ----------------------------------------------
++ * Slot names below are the contract bedrock_rl/journal.py::EVENTS
++ * repeats. Unused slots are written as 0.
++ *
++ *                              a          b        c        d          e        f      */
++enum {
++    RLJ_EPISODE          =  1, /* index,    0,       0,       0,         0,       0     */
++    RLJ_BLOCK_BROKEN     =  2, /* block,    x,       y,       z,         tool,    drop; flags=meta */
++    RLJ_BLOCK_PLACED     =  3, /* block,    x,       y,       z,         item,    slot  */
++    RLJ_ITEM_PICKED_UP   =  4, /* item,     count,   meta,    x,         y,       z     */
++    RLJ_ITEM_DROPPED     =  5, /* item,     count,   meta,    cause,     0,       0     */
++    RLJ_ITEM_CRAFTED     =  6, /* item,     count,   meta,    width,     screen,  0     */
++    RLJ_ITEM_SMELTED     =  7, /* item,     count,   meta,    input,     0,       0     */
++    RLJ_CONTAINER_OPENED =  8, /* kind,     x,       y,       z,         0,       0     */
++    RLJ_CONTAINER_CLOSED =  9, /* kind,     x,       y,       z,         0,       0     */
++    RLJ_SLOT_CHANGED     = 10, /* slot,     item,    count,   was_item,  was_n,   0     */
++    RLJ_CURSOR_CHANGED   = 11, /* item,     count,   meta,    was_item,  was_n,   0     */
++    RLJ_HOTBAR_SELECTED  = 12, /* slot,     item,    0,       was_slot,  0,       0     */
++    RLJ_AIMED_AT         = 13, /* block,    dist_q4, 0,       was_block, 0,       0     */
++    RLJ_TRAVELLED        = 14, /* blocks,   mm,      0,       0,         0,       0     */
++    RLJ_VITALS_CHANGED   = 15, /* health,   food,    0,       was_health,was_food,0     */
++    RLJ_DIED             = 16, /* 0,        0,       0,       0,         0,       0     */
++    RLJ_DIMENSION_CHANGED= 17, /* dimension,was_dim, 0,       0,         0,       0     */
++    RLJ_CLICK_TARGET     = 18, /* block,    x,       y,       z,         was_block,0; flags=face */
++    RLJ_PLAYER_FLUID_STATE=19, /* block,    x,       y,       z,         was_block,was_flags */
++    RLJ_BUCKET_TARGET    = 20, /* block,    x,       y,       z,         meta,    slot  */
++    RLJ_OVERFLOW         = 63  /* dropped,  0,       0,       0,         0,       0     */
++};
++
++/* RLJ_ITEM_DROPPED cause slot. */
++enum { RLJ_DROP_HARVEST = 0, RLJ_DROP_TOSS = 1, RLJ_DROP_CONTAINER = 2 };
++
++/* RLJ_ITEM_CRAFTED screen slot: which surface produced it. */
++enum { RLJ_CRAFT_GUI = 0, RLJ_CRAFT_PRIMITIVE = 1 };
++
++/* RLJ_PLAYER_FLUID_STATE flags. `block` is normalized to 0, water (8), or
++ * lava (10). BODY is the same collision-volume material test player physics
++ * uses; VIEWPOINT is the exact near-plane eye test the renderer uses for
++ * fog; OVERLAY is its first-person water-overlay predicate. */
++enum {
++    RLJ_FLUID_BODY      = 1 << 0,
++    RLJ_FLUID_VIEWPOINT = 1 << 1,
++    RLJ_FLUID_OVERLAY   = 1 << 2
++};
++
++/* One record. 32 bytes, little-endian, no padding. */
++#pragma pack(push, 1)
++typedef struct {
++    unsigned short type;
++    unsigned short flags;   /* event-specific: broken/placed meta, fluid */
++    int tick;
++    int v[6];
++} RlJrnRec;
++
++/* Written once when the journal is armed, so a reader can refuse a
++ * stream it does not understand instead of misparsing it. */
++typedef struct {
++    unsigned magic;         /* "NRLJ" little-endian */
++    unsigned short version;
++    unsigned short rec_bytes;
++} RlJrnHead;
++#pragma pack(pop)
++
++#define RLJ_MAGIC   0x4a4c524eu
++/* Adding a typed event does not change the header or 32-byte record framing;
++ * version 1 is intentionally retained. */
++#define RLJ_VERSION 1
++
++/* Records buffered within ONE tick before the flush. The cap is not a
++ * tuning knob. The journal fd is a pipe and the harness drains it once
++ * per tick after reading that tick's observation, so at most one tick of
++ * records is ever in flight; a tick that could write more than the pipe
++ * buffer holds would block the engine mid-tick while the harness blocks
++ * reading the observation, and neither would ever wake. The cap makes
++ * that unreachable, and the dropped count is reported as RLJ_OVERFLOW
++ * rather than silently lost. */
++#define RLJ_MAX_PER_TICK 512
++
++/* Nonzero when a journal fd is armed. Exposed so the emit macro is one
++ * load and one predicate on the path of every engine tick. */
++extern int rlj_enabled;
++
++void rlj_emit_(int type, int a, int b, int c, int d, int e, int f);
++void rlj_emit_flags_(int type, unsigned flags,
++                     int a, int b, int c, int d, int e, int f);
++
++/* THE emit call. Every event type in the engine goes through this. */
++#define rlj_emit(t, a, b, c, d, e, f)                                    \
++    do {                                                                 \
++        if (rlj_enabled)                                                 \
++            rlj_emit_((t), (a), (b), (c), (d), (e), (f));                \
++    } while (0)
++
++/* The record header's existing flags field carries small event-specific
++ * state without changing the frozen 32-byte journal record. */
++#define rlj_emit_flags(t, flags, a, b, c, d, e, f)                       \
++    do {                                                                 \
++        if (rlj_enabled)                                                 \
++            rlj_emit_flags_((t), (unsigned)(flags),                      \
++                            (a), (b), (c), (d), (e), (f));               \
++    } while (0)
++
++/* Arm the journal from MAGMA_JOURNAL_FD and write the stream header.
++ * A no-op when the variable is unset, which is the default and costs
++ * nothing anywhere. */
++void rlj_open(void);
++
++/* Stamp this tick's records with `tick` and write them as ONE write().
++ * Called once per tick, after the tick and before the observation, so a
++ * reader that has just read observation N is guaranteed to already have
++ * every record for tick N waiting. */
++void rlj_flush(int tick);
++
++/* ---- edge-triggered samplers ---------------------------------------
++ * These turn per-tick quantities into sparse events. Most emit only on a
++ * change; state whose absence must not masquerade as proof emits one explicit
++ * baseline. Called once per emitted observation. */
++void rlj_sample_aim(int block, int dist_q4);
++void rlj_sample_path(double wx, double wz);
++void rlj_sample_vitals(int health, int food);
++#endif /* MAGMA_GAME_RL_JOURNAL_H */
+diff --git a/magma/game/rl_mode.c b/magma/game/rl_mode.c
+index cc6612d..f864e7e 100644
+--- a/magma/game/rl_mode.c
++++ b/magma/game/rl_mode.c
+@@ -43,8 +43,13 @@
+ #include "game/hud.h"
+ #include "game/screen.h"          /* [bedrock-rl] MAGMA_GUI_RL slot hit test */
+ #include "game/container_live.h"  /* [bedrock-rl] gm_container_close */
++#include "game/player_ctl.h"      /* [bedrock-rl] gm_player_cursor */
++#include "game/rl_journal.h"      /* [bedrock-rl] the event journal */
++#include "game/sel_box.h"         /* [bedrock-rl] exact click target */
++#include "game/underwater.h"       /* [bedrock-rl] exact eye fluid state */
+ #include "container_click.h"      /* [bedrock-rl] CC_CLICK_PICKUP (blaze/core) */
+ #include "obs_camera.h"   /* blaze verified semantic camera (LUT trig) */
++#include "core/config.h"    /* [bedrock-rl] cr_cfg()->set_time */
+
+ #define RL_OBS_R    16   /* horizontal obs radius, blocks */
+ #define RL_Y_DOWN   24   /* scan band below player feet   */
+@@ -552,6 +557,13 @@ static int rl_snapshot_load(GmRuntime *r, const char *path,
+     return 1;
+ }
+
++/* [bedrock-rl] Pin the world clock from the config registry, or leave it
++ * alone when the knob is unset (-1). */
++static void rl_apply_set_time(GmRuntime *r) {
++    long long t = cr_cfg()->set_time;
++    if (t >= 0) gm_runtime_set_time(r, t);
++}
++
+ /* Value of a quoted-string action key ("snapshot":"/path"); 1 if present. */
+ static int rl_str(const char *line, const char *key, char *out, int cap) {
+     char pat[40];
+@@ -689,6 +701,25 @@ static void rl_emit_obs(GmRuntime *r, int bin, int want_cam) {
+     }
+     rl_prof[2] += rl_now() - tp; tp = rl_now();
+
++    /* [bedrock-rl] journal: the crosshair sample and the tick's flush.
++     *
++     * The aim sample reads the SAME centre pixel the harness reads out of
++     * the record it is about to be handed (cam[18*64+32]), so "was ever
++     * aimed at X" and the instantaneous crosshair check can never
++     * disagree. With "cam":0 the camera buffers are deliberately stale
++     * and re-emitted as-is, so the sample is stale in exactly the same
++     * way the observation is.
++     *
++     * The flush is here, immediately before the record is written, and
++     * that placement IS the synchronisation protocol: the harness reads
++     * one observation and then drains the journal fd, so every record for
++     * this tick is already in the pipe by the time it looks. */
++    {
++        int c = (RL_CAM_H / 2) * RL_CAM_W + (RL_CAM_W / 2);
++        rlj_sample_aim((int)cam[c], (int)dep[c]);
++    }
++    rlj_flush((int)r->tick);
++
+     if (bin) {
+         static RlBinObs o;
+         memset(&o, 0, sizeof o);
+@@ -847,6 +878,261 @@ static int rl_gui_enabled(void) {
+     return v;
+ }
+
++/* [bedrock-rl] ---- the derived half of the journal ------------------
++ *
++ * Some transitions have an obvious place in the engine to emit from, and
++ * those carry an rlj_emit() call at that place. Inventory does not. There
++ * is no single chokepoint: writes reach the player inventory through
++ * isr_set_stack, through isr_decr_stack_size's raw slot pointer, through
++ * isr_pick_item, and through four whole-struct `player.inv = next`
++ * assignments, and hooking the setter alone would miss about half of
++ * them, silently.
++ *
++ * So inventory is journalled by DIFF instead, once per tick, over the
++ * unified container_live slot-id space. That is complete by construction:
++ * it cannot miss a write, and a future engine change that moves items
++ * some new way needs no new hook. What it gives up is intra-tick
++ * ordering, so two changes to one slot within a tick coalesce into the
++ * net change. No action in this environment moves a slot twice in a tick
++ * (one gui_click per tick is the rule), and order ACROSS ticks, which is
++ * what the ordering predicate reads, is exact.
++ *
++ * The same argument applies to the open screen, the hotbar selection and
++ * the vitals, which are cheap reads with many writers, so they are
++ * diffed here too.
++ *
++ * Slot ids match game/container_live.h and bedrock_rl/gui_layout.py:
++ *   0..35   player inventory (0..8 hotbar, 9..35 main)
++ *   36..44  craft matrix, row-major
++ *   49..52  armor
++ * Slot 45, the craft RESULT, is deliberately absent: it is a recipe
++ * preview computed from the matrix rather than storage, so it would emit
++ * a change every time the grid moved and mean nothing extra. Taking the
++ * result is RLJ_ITEM_CRAFTED. */
++#define RLJ_SLOT_N 49            /* 45 inventory+matrix, then 4 armor */
++
++static int rlj_slot_prev[RLJ_SLOT_N][3];
++/* Byte copies of the two containers the slot pass reads, so the common
++ * tick can answer "did anything move" with two memcmp calls instead of
++ * 49 stack reads and 147 comparisons. Nothing moves on the overwhelming
++ * majority of ticks: an episode touches its inventory on the handful of
++ * ticks that carry a click or a pickup. Padding, if these structs have
++ * any, can only make a memcmp report a difference that the slot pass
++ * then finds nothing in, which costs one scan and emits nothing. It
++ * cannot hide a change, because equal bytes are equal slots. */
++static IsrInv rlj_inv_prev;
++static ICStack rlj_grid_prev[9];
++static int rlj_cursor_prev[3];
++static int rlj_screen_prev, rlj_sx_prev, rlj_sy_prev, rlj_sz_prev;
++static int rlj_hotbar_prev;
++static int rlj_dead_prev, rlj_dimension_prev;
++static int rlj_click_prev[5];
++static int rlj_bucket_prev[6];
++static int rlj_fluid_prev, rlj_fluid_flags_prev;
++static int rlj_state_valid;      /* 0 = take a baseline, do not emit */
++
++static int rlj_slot_id(int i)
++{
++    return i < 45 ? i : GMC_ARMOR0 + (i - 45);
++}
++
++static void rlj_stack_of(const GmRuntime *r, int i, int *out)
++{
++    ICStack s;
++    if (i < 36)      s = isr_get_stack(&r->player.inv, i);
++    else if (i < 45) s = r->craft_grid[i - 36];
++    else             s = isr_get_stack(&r->player.inv, ISR_ARMOR0 + (i - 45));
++    if (s.item <= 0 || s.count <= 0) {
++        out[0] = 0; out[1] = 0; out[2] = 0;
++    } else {
++        out[0] = s.item; out[1] = s.count; out[2] = s.meta;
++    }
++}
++
++/* Fluid contact must be sampled every engine tick rather than reconstructed
++ * from the top-256 nearby-block list at an assistant-turn boundary. BODY is
++ * the exact volume predicate used by player physics. VIEWPOINT and OVERLAY
++ * come from the same evaluator as frame_capture.c, so red lava fog or the
++ * water overlay cannot appear without a corresponding journal state. The
++ * first dry sample is emitted too: an artifact with no event is an old,
++ * incapable engine, not proof that the player stayed dry. */
++static void rlj_sample_fluid(const GmRuntime *r)
++{
++    GmPlayerView view;
++    GmUnderwater uw;
++    int body, block, flags = 0;
++    int x, y, z;
++
++    body = psv_in_liquid(r->window, &r->player.ent, 1) ? 8 :
++           psv_in_liquid(r->window, &r->player.ent, 0) ? 10 : 0;
++    gm_runtime_view(r, &view);
++    /* fog brightness does not participate in fluid/overlay classification. */
++    gm_uw_eval(r->world, r->dimension, &view, 1.0f, &uw);
++    if (body)
++        flags |= RLJ_FLUID_BODY;
++    if (uw.fluid)
++        flags |= RLJ_FLUID_VIEWPOINT;
++    if (uw.overlay)
++        flags |= RLJ_FLUID_OVERLAY;
++    block = (body == 10 || uw.fluid == 2) ? 10 :
++            (body == 8 || uw.fluid == 1 || uw.overlay) ? 8 : 0;
++    x = (int)floor(r->player.ent.posX + (double)r->ox);
++    y = (int)floor(r->player.ent.posY);
++    z = (int)floor(r->player.ent.posZ + (double)r->oz);
++    if (!rlj_state_valid || block != rlj_fluid_prev ||
++        flags != rlj_fluid_flags_prev)
++        rlj_emit_flags(RLJ_PLAYER_FLUID_STATE, flags,
++                       block, x, y, z,
++                       rlj_state_valid ? rlj_fluid_prev : -1,
++                       rlj_state_valid ? rlj_fluid_flags_prev : 0);
++    rlj_fluid_prev = block;
++    rlj_fluid_flags_prev = flags;
++}
++
++/* One pass. Called once per emitted observation, after the tick, with the
++ * screen state the RL loop owns. `screen` is the open container kind
++ * (0 player, 1 table, 2 furnace, 3 chest) or -1 for no screen. */
++static void rlj_sample_state(const GmRuntime *r, int screen,
++                             int sx, int sy, int sz)
++{
++    int i, cur[3];
++    ICStack cs;
++    int hot, dead;
++
++    /* The whole pass, not just the emits. A process with no journal fd
++     * must not pay for a diff nobody reads, and the journal is armed
++     * once at boot and never mid-process, so a stale latch here cannot
++     * be observed. */
++    if (!rlj_enabled)
++        return;
++
++    if (!rlj_state_valid ||
++        memcmp(&rlj_inv_prev, &r->player.inv, sizeof rlj_inv_prev) != 0 ||
++        memcmp(rlj_grid_prev, r->craft_grid, sizeof rlj_grid_prev) != 0) {
++        for (i = 0; i < RLJ_SLOT_N; ++i) {
++            rlj_stack_of(r, i, cur);
++            if (rlj_state_valid &&
++                (cur[0] != rlj_slot_prev[i][0] ||
++                 cur[1] != rlj_slot_prev[i][1] ||
++                 cur[2] != rlj_slot_prev[i][2]))
++                rlj_emit(RLJ_SLOT_CHANGED, rlj_slot_id(i), cur[0], cur[1],
++                         rlj_slot_prev[i][0], rlj_slot_prev[i][1], cur[2]);
++            rlj_slot_prev[i][0] = cur[0];
++            rlj_slot_prev[i][1] = cur[1];
++            rlj_slot_prev[i][2] = cur[2];
++        }
++        rlj_inv_prev = r->player.inv;
++        memcpy(rlj_grid_prev, r->craft_grid, sizeof rlj_grid_prev);
++    }
++
++    cs = gm_player_cursor();
++    cur[0] = (cs.item <= 0 || cs.count <= 0) ? 0 : cs.item;
++    cur[1] = cur[0] ? cs.count : 0;
++    cur[2] = cur[0] ? cs.meta : 0;
++    if (rlj_state_valid &&
++        (cur[0] != rlj_cursor_prev[0] || cur[1] != rlj_cursor_prev[1] ||
++         cur[2] != rlj_cursor_prev[2]))
++        rlj_emit(RLJ_CURSOR_CHANGED, cur[0], cur[1], cur[2],
++                 rlj_cursor_prev[0], rlj_cursor_prev[1], 0);
++    rlj_cursor_prev[0] = cur[0];
++    rlj_cursor_prev[1] = cur[1];
++    rlj_cursor_prev[2] = cur[2];
++
++    /* A switch from one container to another is a close and an open, in
++     * that order, which is what the agent did and what a task means. */
++    if (rlj_state_valid && screen != rlj_screen_prev) {
++        if (rlj_screen_prev >= 0)
++            rlj_emit(RLJ_CONTAINER_CLOSED, rlj_screen_prev, rlj_sx_prev,
++                     rlj_sy_prev, rlj_sz_prev, 0, 0);
++        if (screen >= 0)
++            rlj_emit(RLJ_CONTAINER_OPENED, screen, sx, sy, sz, 0, 0);
++    }
++    rlj_screen_prev = screen;
++    rlj_sx_prev = sx; rlj_sy_prev = sy; rlj_sz_prev = sz;
++
++    hot = r->player.inv.current_item;
++    if (rlj_state_valid && hot != rlj_hotbar_prev) {
++        ICStack h = isr_get_stack(&r->player.inv, hot);
++        rlj_emit(RLJ_HOTBAR_SELECTED, hot,
++                 (h.item > 0 && h.count > 0) ? h.item : 0, 0,
++                 rlj_hotbar_prev, 0, 0);
++    }
++    rlj_hotbar_prev = hot;
++
++    /* Health is reported as whole hearts-worth of points, 0..20, which is
++     * the number the player sees and the number a task means. */
++    rlj_sample_vitals((int)r->vitals.health, (int)r->vitals.foodLevel);
++
++    dead = r->dead ? 1 : 0;
++    if (rlj_state_valid && dead && !rlj_dead_prev)
++        rlj_emit(RLJ_DIED, 0, 0, 0, 0, 0, 0);
++    rlj_dead_prev = dead;
++
++    if (rlj_state_valid && r->dimension != rlj_dimension_prev)
++        rlj_emit(RLJ_DIMENSION_CHANGED, r->dimension,
++                 rlj_dimension_prev, 0, 0, 0, 0);
++    rlj_dimension_prev = r->dimension;
++
++    /* The exact 5-block look-axis ray used by attack/use. Unlike the
++     * bounded nearby-block summary, this cannot lose a target when flat
++     * terrain fills that summary's 256 rows. */
++    {
++        int hx, hy, hz, ax, ay, az, target[5] = {0, 0, 0, 0, 0};
++        if (gm_raycast_sel_reach(r->window, &r->sin_table, &r->player, 5.0,
++                                 &hx, &hy, &hz, &ax, &ay, &az) >= 0) {
++            target[0] = psv_get_block(r->window, hx, hy, hz);
++            target[1] = hx + r->ox;
++            target[2] = hy;
++            target[3] = hz + r->oz;
++            /* Adjacent replaceable cell selected by the exact use ray.
++             * 1 west, 2 east, 3 down, 4 up, 5 north, 6 south. The face is
++             * part of the edge latch: moving around the same hit block
++             * must still publish a fresh placement target. */
++            target[4] = ax < hx ? 1 : ax > hx ? 2
++                      : ay < hy ? 3 : ay > hy ? 4
++                      : az < hz ? 5 : az > hz ? 6 : 0;
++        }
++        if (!rlj_state_valid ||
++            memcmp(target, rlj_click_prev, sizeof target) != 0) {
++            rlj_emit_flags(RLJ_CLICK_TARGET, target[4], target[0], target[1],
++                           target[2], target[3],
++                           rlj_state_valid ? rlj_click_prev[0] : -1, 0);
++            memcpy(rlj_click_prev, target, sizeof target);
++        }
++    }
++
++    /* ItemBucket uses a different ray from attack/place: source-level fluids
++     * are hits and ordinary click_target intentionally passes through them.
++     * Publish that exact ray only for a selected empty bucket. The inactive
++     * slot=-1 state and the no-source state at the selected slot are distinct,
++     * so switching away cannot leave a stale actionable target. */
++    {
++        GmBucketTarget sampled;
++        int bucket[6];
++        gm_player_bucket_target_state(r->window, &r->sin_table, &r->player,
++                                      r->ox, r->oz, &sampled);
++        bucket[0] = sampled.block;
++        bucket[1] = sampled.wx;
++        bucket[2] = sampled.wy;
++        bucket[3] = sampled.wz;
++        bucket[4] = sampled.meta;
++        bucket[5] = sampled.slot;
++        if (!rlj_state_valid ||
++            memcmp(bucket, rlj_bucket_prev, sizeof bucket) != 0) {
++            rlj_emit(RLJ_BUCKET_TARGET,
++                     bucket[0], bucket[1], bucket[2], bucket[3],
++                     bucket[4], bucket[5]);
++            memcpy(rlj_bucket_prev, bucket, sizeof bucket);
++        }
++    }
++
++    rlj_sample_path(r->player.ent.posX + (double)r->ox,
++                    r->player.ent.posZ + (double)r->oz);
++    rlj_sample_fluid(r);
++
++    rlj_state_valid = 1;
++}
++
+ int gm_rl_run(const GmConfig *cfg) {
+     static GmRuntime r;
+     char err[256];
+@@ -882,6 +1168,16 @@ int gm_rl_run(const GmConfig *cfg) {
+      * world would change what "use" does for existing non-GUI tasks. */
+     r.use_activates_container = rl_gui_enabled();
+
++    /* [bedrock-rl] --set set_time=<ticks>: pin the world clock. A fresh
++     * world starts at tick 0, which is sunrise, and the sky light ramps to
++     * full daylight only by tick ~730, so every short episode and every
++     * recording is lit at about 0.6 of daylight. app/game_main.c already
++     * applies this knob, but only on the headless dump path, and RL mode
++     * returns at game_main.c:476 before reaching it. Applied here at boot,
++     * after gm_runtime_init. Nothing in RlBinObs samples light, so this
++     * changes rendered pixels and not the semantic observation. */
++    rl_apply_set_time(&r);
++
+     /* MAGMA_RANDTICK=0: disable live random block ticks (grass spread,
+      * leaf decay, fire, crops). The batched blaze env does not simulate
+      * randtick, so the verify_cpu gates run the real env with this set to
+@@ -913,6 +1209,14 @@ int gm_rl_run(const GmConfig *cfg) {
+         }
+     }
+
++    /* [bedrock-rl] Arm the journal from MAGMA_JOURNAL_FD, then take the
++     * baseline. Inventory and vitals do not emit transitions for initial
++     * state; exact click-target and fluid state do emit explicit baselines so
++     * an artifact can prove its engine supported those safety signals.
++     * RLJ_EPISODE marks the stream's single episode. */
++    rlj_open();
++    rlj_emit(RLJ_EPISODE, 0, 0, 0, 0, 0, 0);
++    rlj_sample_state(&r, -1, 0, 0, 0);
+     rl_emit_obs(&r, cfg->rl_bin, 1);
+     for (t = 0; cfg->ticks < 0 || t < cfg->ticks; ++t) {
+         GmAction a;
+@@ -1069,6 +1373,22 @@ int gm_rl_run(const GmConfig *cfg) {
+                 gm_screen_rl_pointer = 0;
+             }
+         }
++        /* [bedrock-rl] journal: the diffed half of this tick. Placed
++         * after the container-follow block above, because the open screen
++         * is part of what it reports and that block is where the screen
++         * settles for this tick. Everything the engine emitted from
++         * inside the tick is already buffered ahead of these records, so
++         * one tick's records read engine transitions first, then the
++         * derived ones. rl_emit_obs flushes them. */
++        {
++            int screen;
++            if (rl_gui_enabled())
++                screen = gui_open ? r.container : -1;
++            else
++                screen = r.container ? r.container : -1;
++            rlj_sample_state(&r, screen, r.container_wx, r.container_wy,
++                             r.container_wz);
++        }
+         rl_emit_obs(&r, cfg->rl_bin, (int)rl_num(line, "cam", 1));
+     }
+     if (frames) gm_frame_capture_close(frames);
+diff --git a/magma/game/runtime.c b/magma/game/runtime.c
+index baa2760..93d423b 100644
+--- a/magma/game/runtime.c
++++ b/magma/game/runtime.c
+@@ -1,5 +1,6 @@
+ #include "game/runtime.h"
+ #include "game/randtick.h"
++#include "game/rl_journal.h"      /* [bedrock-rl] the event journal */
+ #include "game/sel_box.h"
+
+ #include <math.h>
+@@ -632,6 +633,44 @@ void gm_runtime_tick(GmRuntime *r, GmAction action) {
+     }
+     for (int i = 0; i < n; ++i) {
+         int old_id = gm_world_block(r->world, edits[i].wx, edits[i].wy, edits[i].wz);
++        /* [bedrock-rl] journal: block broken / block placed.
++         *
++         * This loop is the one chokepoint for player-caused block edits.
++         * `edits` is filled only by gm_player_tick_gr, so a fluid spread
++         * or a random tick is not in here and cannot be mistaken for the
++         * agent mining something. `old_id` is free at this point and is
++         * what makes "which block was destroyed" answerable, which the
++         * edit record itself does not carry.
++         *
++         * The tool reported is `held_now`, the stack held at the START of
++         * this tick. That is the tool the agent chose for the swing. The
++         * post-swing stack is the wrong answer at exactly the interesting
++         * moment, because a tool that breaks on its last use has already
++         * left the slot by the time the block does. */
++        if (edits[i].id == 0 && old_id != 0)
++            /* Preserve the destroyed block's state as well as its id.
++             * Stone variants share id 1 but have different natural drops;
++             * without metadata a verifier cannot distinguish a legitimate
++             * granite drop from a wrong-tool plain-stone break. */
++            rlj_emit_flags(RLJ_BLOCK_BROKEN,
++                           gm_world_meta(r->world, edits[i].wx,
++                                         edits[i].wy, edits[i].wz) & 15,
++                           old_id, edits[i].wx, edits[i].wy,
++                           edits[i].wz,
++                           held_now.count > 0 ? held_now.item : 0,
++                           edits[i].drop_id);
++        else if (edits[i].id != 0 && edits[i].id != old_id)
++            /* GmBlockEdit already carries the authoritative placed state.
++             * Its 0..15 metadata fits in the journal header's existing
++             * flags word, keeping both the record and RlBinObs byte-frozen. */
++            rlj_emit_flags(RLJ_BLOCK_PLACED, edits[i].meta,
++                           edits[i].id, edits[i].wx, edits[i].wy,
++                           edits[i].wz,
++                           held_now.count > 0 ? held_now.item : 0,
++                           r->player.inv.current_item);
++        if (edits[i].drop_id > 0)
++            rlj_emit(RLJ_ITEM_DROPPED, edits[i].drop_id, edits[i].drop_count,
++                     edits[i].drop_meta, RLJ_DROP_HARVEST, 0, 0);
+         if (old_id == 54 && edits[i].id != 54)
+             runtime_break_chest_te(r, edits[i].wx, edits[i].wy, edits[i].wz);
+         gm_world_set_block_meta(r->world, edits[i].wx, edits[i].wy, edits[i].wz,
+@@ -749,7 +780,22 @@ void gm_runtime_tick(GmRuntime *r, GmAction action) {
+     for (int i = 0; i < GM_RUNTIME_FURNACES; ++i) if (r->furnaces[i].active) {
+         GmRuntimeFurnace *f = &r->furnaces[i];
+         int was_lit = f->state.burn_time > 0;
++        /* [bedrock-rl] journal: a completed smelt. The cook loop lives
++         * in a shared header compiled for CUDA too, so it is latched here
++         * instead, the same before/after shape the lit flag already uses.
++         * A cook that merely PROGRESSED moves cook_time and nothing else;
++         * a cook that COMPLETED is the one that grows the output stack,
++         * and that is the transition a task means by "smelted". */
++        SRStack was_out = f->state.output;
++        SRStack was_in = f->state.input;
+         furnace_live_tick(&f->state);
++        if (!sr_isEmpty(f->state.output) &&
++            (sr_isEmpty(was_out) || f->state.output.count > was_out.count))
++            rlj_emit(RLJ_ITEM_SMELTED, f->state.output.item,
++                     f->state.output.count -
++                         (sr_isEmpty(was_out) ? 0 : was_out.count),
++                     f->state.output.meta,
++                     sr_isEmpty(was_in) ? 0 : was_in.item, 0, 0);
+         int lit = f->state.burn_time > 0;
+         if (lit != was_lit) {
+             int id = gm_world_block(r->world,f->wx,f->wy,f->wz);
+@@ -1582,6 +1628,13 @@ int gm_runtime_craft(GmRuntime *r, int grid_width, const int inv_slots[9]) {
+     (void)isr_add_item_stack_to_inventory(&next, &output);
+     if (!isr_is_empty(&output)) return 0;
+     r->player.inv = next;
++    /* [bedrock-rl] journal: the discrete "craft":N primitive. Emitted
++     * on the COMMIT line and not a statement earlier, because everything
++     * above operates on the copy `next` and the two returns above it
++     * discard the whole attempt. An emit before this point is a craft
++     * event for a craft that did not happen. */
++    rlj_emit(RLJ_ITEM_CRAFTED, result.item, result.count, result.meta,
++             grid_width, RLJ_CRAFT_PRIMITIVE, 0);
+     return 1;
+ }
+
+diff --git a/magma/game/sel_box.c b/magma/game/sel_box.c
+index 7c1d30e..4fa80f0 100644
+--- a/magma/game/sel_box.c
++++ b/magma/game/sel_box.c
+@@ -265,9 +265,15 @@ static double ray_box_hit(double ex, double ey, double ez,
+     return t;
+ }
+
+-/* blocks the selection ray passes through (vanilla collisionRayTrace null) */
+-static int ray_transparent(int id) {
+-    return id == 0 || (id >= 8 && id <= 11) || id == 51;
++/* Blocks the ray passes through (vanilla collisionRayTrace null). ItemBucket
++ * calls World.rayTraceBlocks with stopOnLiquid=true: only source-level liquid
++ * is collidable in that mode; the ordinary selection/use ray ignores all
++ * liquid. */
++static int ray_transparent(int id, int meta, int hit_source_liquid) {
++    if (id == 0 || id == 51) return 1;
++    if (id >= 8 && id <= 11)
++        return !hit_source_liquid || meta != 0;
++    return 0;
+ }
+
+ /* PlayerControllerMP.getBlockReachDistance: creative 5.0F, survival 4.5F.
+@@ -276,9 +282,11 @@ static int ray_transparent(int id) {
+ #define GM_SEL_REACH 4.5
+ #endif
+
+-int gm_raycast_sel_reach(const Chunk *win, const McSinTable *st,
+-                         const PsvPlayer *pl, double reach,
+-                         int *hx, int *hy, int *hz, int *ax, int *ay, int *az) {
++static int raycast_sel_reach(const Chunk *win, const McSinTable *st,
++                             const PsvPlayer *pl, double reach,
++                             int hit_source_liquid,
++                             int *hx, int *hy, int *hz,
++                             int *ax, int *ay, int *az) {
+     /* vanilla getVectorForRotation(pitch, yaw), same as psv_raycast */
+     float f  = mc_cos(st, -pl->yaw * 0.017453292f - 3.1415927f);
+     float f1 = mc_sin(st, -pl->yaw * 0.017453292f - 3.1415927f);
+@@ -299,7 +307,8 @@ int gm_raycast_sel_reach(const Chunk *win, const McSinTable *st,
+         int bz = mc_floor(ez + dz * t);
+         if (bx == lastx && by == lasty && bz == lastz) continue;
+         int id = psv_get_block(win, bx, by, bz);
+-        if (!ray_transparent(id)) {
++        int meta = psv_get_meta(win, bx, by, bz);
++        if (!ray_transparent(id, meta, hit_source_liquid)) {
+             float b[6];
+             int nx, ny, nz;
+             gm_sel_box_at(win, bx, by, bz, b);
+@@ -319,6 +328,25 @@ int gm_raycast_sel_reach(const Chunk *win, const McSinTable *st,
+     return -1;
+ }
+
++int gm_raycast_sel_reach(const Chunk *win, const McSinTable *st,
++                         const PsvPlayer *pl, double reach,
++                         int *hx, int *hy, int *hz, int *ax, int *ay, int *az) {
++    return raycast_sel_reach(win, st, pl, reach, 0,
++                             hx, hy, hz, ax, ay, az);
++}
++
++int gm_raycast_bucket(const Chunk *win, const McSinTable *st,
++                      const PsvPlayer *pl, double reach,
++                      int *hx, int *hy, int *hz) {
++    int ax, ay, az;
++    int hit = raycast_sel_reach(win, st, pl, reach, 1,
++                                hx, hy, hz, &ax, &ay, &az);
++    if (hit < 0) return 0;
++    int id = psv_get_block(win, *hx, *hy, *hz);
++    return id >= 8 && id <= 11 && psv_get_meta(win, *hx, *hy, *hz) == 0
++         ? id : 0;
++}
++
+ int gm_raycast_sel(const Chunk *win, const McSinTable *st,
+                    const PsvPlayer *pl,
+                    int *hx, int *hy, int *hz, int *ax, int *ay, int *az) {
+diff --git a/magma/game/sel_box.h b/magma/game/sel_box.h
+index 5c9da2a..1295163 100644
+--- a/magma/game/sel_box.h
++++ b/magma/game/sel_box.h
+@@ -47,6 +47,14 @@ int gm_raycast_sel_reach(const Chunk *win, const McSinTable *st,
+                          const PsvPlayer *pl, double reach,
+                          int *hx, int *hy, int *hz, int *ax, int *ay, int *az);
+
++/* ItemBucket's World.rayTraceBlocks(..., stopOnLiquid=true) variant. A
++ * source-level water/lava cell is a hit, flowing liquid is transparent, and
++ * any selectable block hit first occludes it. Returns the source block id or
++ * zero. */
++int gm_raycast_bucket(const Chunk *win, const McSinTable *st,
++                      const PsvPlayer *pl, double reach,
++                      int *hx, int *hy, int *hz);
++
+ #ifdef __cplusplus
+ }
+ #endif

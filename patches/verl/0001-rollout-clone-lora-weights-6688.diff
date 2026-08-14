@@ -1,0 +1,123 @@
+From 173945f2892c128b6a683bd5de010dea2d1c8b4d Mon Sep 17 00:00:00 2001
+From: Hz_Zhang <47402297+HaozheZhang6@users.noreply.github.com>
+Date: Thu, 11 Jun 2026 23:21:49 -0700
+Subject: [PATCH] [rollout] fix: clone LoRA weights out of the reused IPC
+ buffer before add_lora (#6688)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+### What does this PR do?
+
+Fixes #6454. With unmerged LoRA (`lora.merge=False`) + vLLM rollout +
+`free_cache_engine=True`, every rollout step after the first crashed
+with `cudaErrorIllegalAddress`.
+`vLLMColocateWorkerExtension._update_weights` handed the per-bucket
+weight tensors straight to `add_lora`. Those tensors are **views into
+the receiver's single reused IPC bucket buffer**
+(`bucketed_weight_transfer.py`), which is overwritten by the next bucket
+and freed after `receive_weights`. `add_lora` retains them, so a later
+access reads freed/reused memory and crashes. The standard weight-load
+path is safe because it copies out via the model `weight_loader`.
+
+Fix: clone the tensors before `add_lora` so the LoRA weights own their
+storage, the same way the standard path does with `copy_`.
+
+### Checklist Before Starting
+
+- [x] Search for similar PRs (per `AGENTS.md` duplicate-work check):
+  - `is:pr is:open 6454 in:body` → none
+- `is:pr is:open add_lora lora` → only #5599 (`[megatron] Qwen3.5 LoRA &
+MTP support`), a different change (adds LoRA support, not the IPC-buffer
+lifetime fix)
+  - `is:pr is:open unmerged lora rollout` → none
+- [x] Title format `[rollout] fix: ...`
+
+### Test
+
+This is a GPU-only path (unmerged LoRA + vLLM rollout +
+`free_cache_engine` on a real device), so the end-to-end repro needs
+verl's GPU CI; it can't run on a CPU box. The defect is a tensor-storage
+lifetime issue, which reproduces deterministically as a pure aliasing
+demo (same `view`-vs-`clone` mechanism, numpy standing in for torch
+since torch isn't installed here):
+
+```python
+import numpy as np
+buf = np.zeros(4)              # the reused IPC bucket buffer (bucketed_weight_transfer.py)
+w_view = buf[:2]              # a per-bucket weight tensor = a VIEW into that buffer
+old = dict([('w', w_view)])  # OLD: dict(weights) keeps the view; add_lora retains it
+new = {'w': w_view.copy()}   # FIX: clone() so the LoRA weight owns its storage (== torch .clone())
+buf[:2] = [99.0, 99.0]        # next bucket overwrites / frees the buffer
+print('OLD:', old['w'].tolist())   # [99.0, 99.0]  <- add_lora later reads reused memory -> illegal access
+print('FIX:', new['w'].tolist())   # [0.0, 0.0]    <- unaffected by buffer reuse
+```
+
+Output:
+
+```
+OLD: [99.0, 99.0]
+FIX: [0.0, 0.0]
+```
+
+I verified the bug is present on current `main` (`weights =
+dict(weights)` at `verl/workers/rollout/vllm_rollout/utils.py:308`
+passes buffer views to `add_lora`) and that the fix mirrors the
+standard, already-safe weight-load path. I can run the full RL e2e on
+verl's GPU CI once a maintainer enables it (the PR template notes CI
+needs a `ci-request`).
+
+### API and Usage Example
+
+No API change — internal rollout weight-update fix.
+
+### Design & Code Changes
+
+`verl/workers/rollout/vllm_rollout/utils.py` — in
+`vLLMColocateWorkerExtension._update_weights`, replace `weights =
+dict(weights)` with `weights = {name: tensor.clone() for name, tensor in
+weights}` so the LoRA weights are cloned out of the reused IPC bucket
+buffer before `add_lora` retains them.
+
+### Checklist Before Submitting
+
+- [x] Read the Contribute Guide and `AGENTS.md`.
+- [x] Ran `ruff` on the changed file.
+- [ ] Docs: no doc change needed (internal bugfix).
+- [ ] CI: e2e needs verl GPU CI (`ci-request`); see Test section for why
+a CPU unit test can't cover this path and the deterministic mechanism
+demo provided instead.
+
+---
+
+**AI assistance disclosure** (per `AGENTS.md`): this fix was developed
+with AI assistance (Claude). I reviewed every changed line, traced the
+root cause against the current `main` source, and ran the checks above.
+The commit carries a `Co-authored-by: Claude` trailer and a DCO
+`Signed-off-by`. Why it's not a duplicate and the test commands/results
+are documented in the sections above.
+
+Signed-off-by: Haozhe Zhang <zhang.hz6666@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+---
+ verl/workers/rollout/vllm_rollout/utils.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/verl/workers/rollout/vllm_rollout/utils.py b/verl/workers/rollout/vllm_rollout/utils.py
+index a8045f31..4249c313 100644
+--- a/verl/workers/rollout/vllm_rollout/utils.py
++++ b/verl/workers/rollout/vllm_rollout/utils.py
+@@ -305,7 +305,9 @@ class vLLMColocateWorkerExtension:
+ 
+     def _update_weights(self, weights: list[tuple[str, torch.Tensor]], peft_config: dict, base_sync_done: bool):
+         if peft_config and base_sync_done:
+-            weights = dict(weights)
++            # Clone out of the receiver's reused IPC bucket buffer: add_lora keeps these tensors
++            # past this callback, so views into the freed/overwritten buffer crash later (#6454).
++            weights = {name: tensor.clone() for name, tensor in weights}
+             lora_request = TensorLoRARequest(
+                 lora_name=VLLM_LORA_NAME,
+                 lora_int_id=VLLM_LORA_INT_ID,
+-- 
+2.34.1
+

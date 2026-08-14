@@ -1,0 +1,47 @@
+{
+  "evaluation": "pass@3",
+  "prompts": 288,
+  "samples_per_prompt": 3,
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "max_new_tokens": 1024
+  },
+  "points": [
+    {
+      "label": "Base",
+      "trial_successes": 69,
+      "trials": 864,
+      "pass_successes": 31,
+      "pass_rate": 0.1076388888888889,
+      "seed_clustered_ci95": [
+        0.014960732563709625,
+        0.24887413096465671
+      ],
+      "records": "dev_base.pass3.records.json",
+      "sha256": "4360ee3adc0e1d4c2af0bd2ead1e3fffa27e6b719954643ca1f49df8d3db3c39"
+    },
+    {
+      "label": "GRPO-10",
+      "trial_successes": 92,
+      "trials": 864,
+      "pass_successes": 64,
+      "pass_rate": 0.2222222222222222,
+      "seed_clustered_ci95": [
+        0.09679957027553865,
+        0.3808470294611818
+      ],
+      "records": "dev_step10.pass3.records.json",
+      "sha256": "9ae7f031df17f0bd2066e43a7ad34155f49a60e899dbb13fffc7f9256fdfc519"
+    }
+  ],
+  "paired_transitions": {
+    "both_failure": 220,
+    "both_success": 27,
+    "failure_to_success": 37,
+    "success_to_failure": 4
+  },
+  "paired_two_sided_exact_p": 1.0258372640237212e-07,
+  "broken_trials": 0
+}

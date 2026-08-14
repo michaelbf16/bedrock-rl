@@ -1,0 +1,23 @@
+diff --git a/verl/workers/utils/padding.py b/verl/workers/utils/padding.py
+index c72f06d5..b332a127 100644
+--- a/verl/workers/utils/padding.py
++++ b/verl/workers/utils/padding.py
+@@ -64,6 +64,17 @@ def left_right_2_no_padding(data: TensorDict) -> TensorDict:
+             valid_ids = curr_pos_ids[:, curr_mask]
+         position_ids_list.append(valid_ids)
+-    position_ids_nested = torch.nested.as_nested_tensor(position_ids_list, layout=torch.jagged)
++    if position_ids_list[0].dim() == 2:
++        # VLM MRoPE ids have shape (axes, sequence). as_nested_tensor()
++        # assumes dimension zero is ragged, so it records [axes, axes]
++        # as the sequence lengths and merely changing _ragged_idx later
++        # leaves corrupt offsets behind. Pack the variable sequence axis
++        # explicitly. For Qwen3-VL this produces (batch, 4, jagged).
++        position_ids_values = torch.cat(position_ids_list, dim=1)
++        position_ids_nested = torch.nested.nested_tensor_from_jagged(
++            position_ids_values, offsets=cu_seqlens, jagged_dim=2
++        )
++    else:
++        position_ids_nested = torch.nested.as_nested_tensor(position_ids_list, layout=torch.jagged)
+ 
+     data["input_ids"] = input_ids_nested
+     data["position_ids"] = position_ids_nested

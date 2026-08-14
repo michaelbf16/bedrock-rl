@@ -1,0 +1,103 @@
+diff --git a/blaze/core/items_tools_armor.h b/blaze/core/items_tools_armor.h
+--- a/blaze/core/items_tools_armor.h
++++ b/blaze/core/items_tools_armor.h
+@@ -147,6 +147,7 @@ MC_HD static inline int ita_block_harvest_tool(int block_id) {
+         || block_id == BLK_COAL_ORE || block_id == BLK_OBSIDIAN || block_id == BLK_GOLD_ORE
+         || block_id == BLK_DIAMOND_ORE || block_id == BLK_LAPIS_ORE
+-        || block_id == BLK_EMERALD_ORE)
++        || block_id == BLK_EMERALD_ORE || block_id == BLK_REDSTONE_ORE
++        || block_id == 74)
+         return 1; /* pickaxe */
+     if (block_id == BLK_DIRT || block_id == BLK_GRASS || block_id == BLK_SAND)
+         return 2; /* shovel */
+@@ -157,7 +158,8 @@ MC_HD static inline int ita_block_harvest_level(int block_id) {
+     if (block_id == BLK_OBSIDIAN) return 3;
+     if (block_id == BLK_IRON_ORE || block_id == BLK_LAPIS_ORE) return 1;
+     if (block_id == BLK_GOLD_ORE || block_id == BLK_DIAMOND_ORE
+-        || block_id == BLK_EMERALD_ORE) return 2;
++        || block_id == BLK_EMERALD_ORE || block_id == BLK_REDSTONE_ORE
++        || block_id == 74) return 2;
+     if (block_id == BLK_STONE || block_id == BLK_COBBLESTONE || block_id == BLK_COAL_ORE) return 0;
+     return 0;
+ }
+diff --git a/blaze/env/blaze_core.h b/blaze/env/blaze_core.h
+--- a/blaze/env/blaze_core.h
++++ b/blaze/env/blaze_core.h
+@@ -945,6 +945,12 @@ MC_HD static inline void cu_harvest_drop(int block_id, int block_meta, int tool_
+         case 54: *item = 54; *count = 1; break; /* chest block item */
+         case 56: *item = 264; *count = 1; break;
+         case 129: *item = 388; *count = 1; break; /* emerald ore -> emerald */
++        case 73: case 74: {
++            u32 h = (u32)wx * 73428767u ^ (u32)wy * 912931u
++                    ^ (u32)wz * 19349663u;
++            h ^= h >> 13; h *= 0x85ebca6bu; h ^= h >> 16;
++            *item = 331; *count = 4 + (int)(h & 1u); break;
++        }
+         default: break;
+     }
+ }
+diff --git a/magma/game/player_ctl.c b/magma/game/player_ctl.c
+--- a/magma/game/player_ctl.c
++++ b/magma/game/player_ctl.c
+@@ -275,6 +275,12 @@ static void harvest_drop(int block_id, int block_meta, int tool_id,int wx,int wy
+         case 54: *item = 54; *count = 1; break; /* chest block item */
+         case 56: *item = 264; *count = 1; break;/* diamond ore -> diamond */
+         case 129: *item = 388; *count = 1; break;/* emerald ore -> emerald */
++        case 73: case 74: {
++            u32 h=(u32)wx*73428767u^(u32)wy*912931u
++                  ^(u32)wz*19349663u;
++            h^=h>>13;h*=0x85ebca6bu;h^=h>>16;
++            *item=331;*count=4+(int)(h&1u);break;
++        }
+         default: break;
+     }
+ }
+diff --git a/magma/game/test_player_ctl.c b/magma/game/test_player_ctl.c
+--- a/magma/game/test_player_ctl.c
++++ b/magma/game/test_player_ctl.c
+@@ -257,6 +257,45 @@ int main(void)
+     CHECK(emerald_edit.drop_id == 388 && emerald_edit.drop_count == 1,
+           "emerald ore harvest emits one emerald item");
+ 
++    /* Redstone ore is common tunnel geometry, not only a resource target.
++     * It must use the pickaxe speed table or short closed-loop attack holds
++     * repeatedly reset before the hand-speed dig can finish. */
++    printf("case B4: redstone ore uses pick speed and harvest drop\n");
++    fill_flat(win);
++    PsvPlayer redstone_player;
++    PvStats redstone_stats; pv_init(&redstone_stats);
++    spawn_at(&redstone_player, 26.5, 65.0, 26.5);
++    set_block_meta(win, 26, 64, 26, 73, 0);
++    isr_set_stack(&redstone_player.inv, 0,
++                  ic_mk(278 /* diamond pick */, 1, 0));
++    redstone_player.inv.current_item = 0;
++    redstone_player.pitch = 89.0f;
++    gm_player_dig_reset();
++
++    GmAction redstone_break;
++    memset(&redstone_break, 0, sizeof redstone_break);
++    redstone_break.attack = 1;
++    GmBlockEdit redstone_edit = {0};
++    int redstone_break_tick = -1;
++    for (int t = 0; t < 80; ++t) {
++        GmBlockEdit edits[8];
++        int nedits = 0;
++        gm_player_tick((struct Chunk *)win, (struct McSinTable *)&st,
++                       (struct PsvPlayer *)&redstone_player,
++                       (struct PvStats *)&redstone_stats,
++                       redstone_break, 0, 0, 0, edits, &nedits, 8);
++        if (nedits == 1 && edits[0].id == 0) {
++            redstone_edit = edits[0];
++            redstone_break_tick = t;
++            break;
++        }
++    }
++    CHECK(redstone_break_tick >= 0 && redstone_break_tick < 30,
++          "diamond pick breaks redstone ore at effective-tool speed");
++    CHECK(redstone_edit.drop_id == 331 && redstone_edit.drop_count >= 4
++          && redstone_edit.drop_count <= 5,
++          "redstone ore harvest emits four or five redstone dust");
++
+     /* ---------------- (C) UNDERWATER DIG PENALTY ---------------- */
+     /* EntityPlayer.getDigSpeed: eye inside water without aqua affinity divides
+      * dig speed by 5 (again by 5 if airborne). Iron pick vs stone is ~8 ticks

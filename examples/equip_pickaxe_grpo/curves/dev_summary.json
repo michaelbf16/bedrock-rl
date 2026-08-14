@@ -1,0 +1,119 @@
+{
+  "base": "Base",
+  "identity_mode": "trial_id",
+  "points": [
+    {
+      "delta_vs_base": {
+        "reward_mean": 0.0,
+        "success_rate": 0.0,
+        "tool_call_rate": 0.0,
+        "transitions": {
+          "both_failure": 261,
+          "both_success": 27,
+          "failure_to_success": 0,
+          "success_to_failure": 0
+        },
+        "turns_mean": 0.0,
+        "workstation_open_rate": 0.0
+      },
+      "label": "Base",
+      "metrics": {
+        "independent_seed_clusters": 36,
+        "reward_mean": -0.15765625,
+        "success_ci95": [
+          0.004090828336446736,
+          0.2315411168089869
+        ],
+        "success_ci95_method": "seed-clustered",
+        "success_rate": 0.09375,
+        "successes": 27,
+        "tool_call_rate": 1.0,
+        "trials": 288,
+        "turns_mean": 1.0,
+        "workstation_open_rate": 0.0
+      },
+      "source": {
+        "identity_mode": "trial_id",
+        "path": "examples/equip_pickaxe_grpo/curves/dev_base.records.json",
+        "sha256": "d584b1260f4570ab13ae31d35b5b6338252143ac6d6371334e9a3a66262b1919"
+      },
+      "step": 0
+    },
+    {
+      "delta_vs_base": {
+        "reward_mean": 0.04645833333333333,
+        "success_rate": 0.020833333333333332,
+        "tool_call_rate": 0.0,
+        "transitions": {
+          "both_failure": 250,
+          "both_success": 22,
+          "failure_to_success": 11,
+          "success_to_failure": 5
+        },
+        "turns_mean": 0.0,
+        "workstation_open_rate": 0.0
+      },
+      "label": "GRPO-5",
+      "metrics": {
+        "independent_seed_clusters": 36,
+        "reward_mean": -0.11119791666666666,
+        "success_ci95": [
+          0.0167919457559762,
+          0.25739987625866534
+        ],
+        "success_ci95_method": "seed-clustered",
+        "success_rate": 0.11458333333333333,
+        "successes": 33,
+        "tool_call_rate": 1.0,
+        "trials": 288,
+        "turns_mean": 1.0,
+        "workstation_open_rate": 0.0
+      },
+      "source": {
+        "identity_mode": "trial_id",
+        "path": "examples/equip_pickaxe_grpo/curves/dev_step5.records.json",
+        "sha256": "bbc58b9728cbe8744c78d7204b1ecdadbf15d409d317b0972dda1bd9f5ec5f8f"
+      },
+      "step": 5
+    },
+    {
+      "delta_vs_base": {
+        "reward_mean": 0.07260416666666666,
+        "success_rate": 0.041666666666666664,
+        "tool_call_rate": 0.0,
+        "transitions": {
+          "both_failure": 223,
+          "both_success": 1,
+          "failure_to_success": 38,
+          "success_to_failure": 26
+        },
+        "turns_mean": 0.0,
+        "workstation_open_rate": 0.0
+      },
+      "label": "GRPO-10",
+      "metrics": {
+        "independent_seed_clusters": 36,
+        "reward_mean": -0.08505208333333333,
+        "success_ci95": [
+          0.043656848834338194,
+          0.2824813240604097
+        ],
+        "success_ci95_method": "seed-clustered",
+        "success_rate": 0.13541666666666666,
+        "successes": 39,
+        "tool_call_rate": 1.0,
+        "trials": 288,
+        "turns_mean": 1.0,
+        "workstation_open_rate": 0.0
+      },
+      "source": {
+        "identity_mode": "trial_id",
+        "path": "examples/equip_pickaxe_grpo/curves/dev_step10.records.json",
+        "sha256": "b69c56d4cea086a8bfcc817141055532d308de372a885ffebcf26ad68b1d6aea"
+      },
+      "step": 10
+    }
+  ],
+  "schema": "bedrock.eval-curve.v1",
+  "trials_per_point": 288
+}

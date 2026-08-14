@@ -1,0 +1,63 @@
+[project]
+name = "bedrock-rl"
+version = "0.1.0"
+description = "Modular Minecraft agent environments and training"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Equal contribution, listed alphabetically by family name.
+authors = [
+    { name = "Michael Evans" },
+    { name = "Jeremy Flint" },
+    { name = "Yusuf Sheikh" },
+]
+dependencies = [
+    "pillow>=10",
+    "pyyaml>=6",
+    "rich>=13",
+]
+
+[project.scripts]
+bedrock = "bedrock_rl.cli.main:main"
+
+[project.optional-dependencies]
+netherite = ["numpy>=1.26"]
+data = ["datasets>=2.19", "numpy>=1.26", "pandas>=2"]
+train = [
+    "torch==2.9.0",
+    "transformers==4.57.6",
+    "accelerate==1.14.0",
+    "peft==0.20.0",
+    "datasets>=2.19",
+    "pandas>=2",
+    "pillow>=10",
+]
+wandb = ["wandb>=0.16"]
+tensorboard = ["tensorboard>=2.18"]
+plot = ["matplotlib>=3.10"]
+modal = ["modal>=1.5,<2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bedrock_rl"]
+exclude = ["**/snapshots/", "**/*.bsnp"]
+
+[tool.hatch.build.targets.sdist]
+# Repository media is useful on GitHub but is not needed to build the wheel.
+exclude = ["docs/assets/"]
+
+# Engine pins and build inputs must also resolve from an installed wheel.
+[tool.hatch.build.targets.wheel.force-include]
+"patches" = "bedrock_rl/_data/patches"
+"THIRD_PARTY_LICENSES" = "bedrock_rl/_data/third_party_licenses"
+
+# ── lint ─────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 79
+extend-exclude = [".venv", "outputs", "snapshots", "data", "logs"]
+
+[tool.ruff.lint]
+select = ["E9", "F"]

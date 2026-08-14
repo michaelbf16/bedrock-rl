@@ -1,0 +1,25 @@
+defaults:
+  task: task.yaml
+  model: qwen3-vl-2b
+
+presets:
+  warmstart:
+    trainer: sft
+    steps: 30
+    data: datasets/farm_one_log.sft.parquet
+    out: ../../outputs/farm_one_log_sft
+    lora_rank: 32
+    brl_keep_latest_images: 1
+    run_tag: farm_one_log_sft
+
+  rl:
+    trainer: rl
+    algorithm: rloo
+    steps: 20
+    train_files: [datasets/farm_one_log.rl.parquet]
+    lora_adapter: ../../outputs/farm_one_log_sft
+    lora_rank: 32
+    brl_keep_latest_images: 1
+    rollout_n: 4
+    train_bs: 8
+    run_tag: farm_one_log_rl

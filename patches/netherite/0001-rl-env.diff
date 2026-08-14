@@ -1,0 +1,690 @@
+diff --git a/blaze/env/blaze_core.h b/blaze/env/blaze_core.h
+index 16b0056..34579e9 100644
+--- a/blaze/env/blaze_core.h
++++ b/blaze/env/blaze_core.h
+@@ -919,7 +919,14 @@ MC_HD static inline void cu_harvest_drop(int block_id, int block_meta, int tool_
+     *item = 0; *count = 0; *meta = 0;
+     if (!pb_can_harvest(tool_id, block_id)) return;
+     switch (block_id) {
+-        case 1:  *item = 4;  *count = 1; break;
++        case 1:
++            /* BlockStone.getItemDropped/damageDropped: plain stone becomes
++             * cobblestone; granite/diorite/andesite retain stone metadata
++             * (mirror of magma player_ctl.c harvest_drop). */
++            *item = block_meta >= 1 && block_meta <= 6 ? 1 : 4;
++            *count = 1;
++            *meta = *item == 1 ? block_meta : 0;
++            break;
+         case 2:  *item = 3;  *count = 1; break;
+         case 3:  *item = 3;  *count = 1; *meta = block_meta & 3; break;
+         case 4:  *item = 4;  *count = 1; break;
+@@ -934,6 +941,8 @@ MC_HD static inline void cu_harvest_drop(int block_id, int block_meta, int tool_
+         case 16: *item = 263; *count = 1; break;
+         case 17: *item = 17; *count = 1; *meta = block_meta & 3; break;
++        case 162: *item = 162; *count = 1; *meta = block_meta & 1; break;
+         case 49: *item = 49; *count = 1; break;
++        case 54: *item = 54; *count = 1; break; /* chest block item */
+         case 56: *item = 264; *count = 1; break;
+         default: break;
+     }
+diff --git a/magma/game/rl_mode.c b/magma/game/rl_mode.c
+index ae6a9e6..cc6612d 100644
+--- a/magma/game/rl_mode.c
++++ b/magma/game/rl_mode.c
+@@ -41,6 +41,9 @@
+ #include "game/rl_mode.h"
+ #include "game/frame_capture.h"
+ #include "game/hud.h"
++#include "game/screen.h"          /* [bedrock-rl] MAGMA_GUI_RL slot hit test */
++#include "game/container_live.h"  /* [bedrock-rl] gm_container_close */
++#include "container_click.h"      /* [bedrock-rl] CC_CLICK_PICKUP (blaze/core) */
+ #include "obs_camera.h"   /* blaze verified semantic camera (LUT trig) */
+ 
+ #define RL_OBS_R    16   /* horizontal obs radius, blocks */
+@@ -738,6 +741,32 @@ static void rl_emit_obs(GmRuntime *r, int bin, int want_cam) {
+         printf("],\"inv_iron\":[%d,%d,%d,%d",
+                rl_inv_count(r, 61), rl_inv_count(r, 15),
+                rl_inv_count(r, 265), rl_inv_count(r, 257));
++        /* open furnace: burn_time, current_burn_time, cook_time, total_cook
++         * then input/fuel/output as [item,count,meta]. All zero when no
++         * furnace is open. Smelting takes 200 ticks, so an agent that cannot
++         * see progress cannot tell "still cooking" from "stalled, no fuel".
++         * The rendered screen shows the flame and arrow, and this is the
++         * same truth for reward code. JSON path only, the binary BOLR layout
++         * stays frozen for the bedrock-rl parser (same rule as inv_iron).
++         * meta is carried because smelting keys on it (fish 0 and 1 are
++         * different recipes) and coal 0 and 1 are coal and charcoal. */
++        {
++            const FurnaceLive *fv = r->container == 2 && r->active_furnace >= 0
++                                        ? &r->furnaces[r->active_furnace].state
++                                        : 0;
++            SRStack fs[3];
++            fs[0] = fv ? fv->input : sr_empty();
++            fs[1] = fv ? fv->fuel : sr_empty();
++            fs[2] = fv ? fv->output : sr_empty();
++            printf("],\"furnace\":[%d,%d,%d,%d],\"furnace_slots\":[",
++                   fv ? fv->burn_time : 0, fv ? fv->current_burn_time : 0,
++                   fv ? fv->cook_time : 0, fv ? fv->total_cook : 0);
++            for (i = 0; i < 3; ++i)
++                printf("%s[%d,%d,%d]", i ? "," : "",
++                       sr_isEmpty(fs[i]) ? 0 : fs[i].item,
++                       sr_isEmpty(fs[i]) ? 0 : fs[i].count,
++                       sr_isEmpty(fs[i]) ? 0 : fs[i].meta);
++        }
+         printf("],\"blocks\":[");
+         for (i = 0; i < RL_NBLOCKS; ++i) {
+             if (i < nblk)
+@@ -778,6 +807,46 @@ static void rl_emit_obs(GmRuntime *r, int bin, int want_cam) {
+     ++rl_prof_n;
+ }
+ 
++/* [bedrock-rl] MAGMA_FRAME_LAZY cache (-1 = unread) */
++static int fl_lazy = -1;
++
++/* [bedrock-rl] MAGMA_GUI_RL=1: mouse-driven container GUI in RL mode.
++ * Adds action keys (all optional):
++ *   "gui_open":1|0      open/close the screen over the CURRENT container
++ *                       (r->container: 0 = player inventory with its 2x2
++ *                       grid, 1 = crafting table 3x3, 2 = furnace). The
++ *                       agent does not need this key to reach 1 or 2: a
++ *                       right mouse ("use":1) with the crosshair on a
++ *                       placed table or furnace opens that screen by
++ *                       itself, the way a person does it, and walking out
++ *                       of reach closes it again. Closing routes through
++ *                       gm_container_close so grid + cursor stacks return
++ *                       to the inventory (vanilla semantics).
++ *   "gui_cursor_x":px   move the virtual mouse (framebuffer pixels,
++ *   "gui_cursor_y":px   clamped to the frame's upper bound; a negative
++ *                       value means no change, not a move off the left or
++ *                       top edge. At 428x240 gui scale is 1 so fb px ==
++ *                       vanilla gui px.
++ *   "gui_click":1|2     left/right click at the cursor. Routed as
++ *                       GmAction.inv_click through gm_runtime_tick into
++ *                       gm_container_click - real pick-up/place/place-one
++ *                       /craft-result semantics, one click per tick.
++ * While open, the screen (+ pointer) is composited into captured frames
++ * via the existing gm_runtime_gui_view hook in frame_capture.c; the binary
++ * obs protocol (RlBinObs) is unchanged - "container" already names the open
++ * screen and inventory effects show up in inv_counts/hotbar as usual. The
++ * JSON obs additionally carries "furnace" (see rl_emit_obs), because
++ * smelting takes real ticks and progress is otherwise only visible in the
++ * rendered frame. */
++static int rl_gui_enabled(void) {
++    static int v = -1;
++    if (v < 0) {
++        const char *e = getenv("MAGMA_GUI_RL");
++        v = (e && e[0] == '1') ? 1 : 0;
++    }
++    return v;
++}
++
+ int gm_rl_run(const GmConfig *cfg) {
+     static GmRuntime r;
+     char err[256];
+@@ -785,12 +854,44 @@ int gm_rl_run(const GmConfig *cfg) {
+     size_t cap = 0;
+     long long t;
+     GmFrameCapture *frames = NULL;
++    /* [bedrock-rl] MAGMA_GUI_RL virtual mouse state (per process; RL
++     * episodes that mutate GUI state use respawn mode, so no cross-episode
++     * leak). The cursor lives in FRAMEBUFFER pixels, so its space is
++     * --width/--height (854x480 unless set) whether or not frames are
++     * captured: a caller that clicks in 428x240 coordinates must pass those
++     * dimensions or every click lands on the wrong slot. */
++    int gui_open = 0, gui_w, gui_h, gui_mx, gui_my;
++    /* [bedrock-rl] 1 while the open screen belongs to a world container
++     * the player activated, so the runtime (not the action stream) owns its
++     * lifetime: walking out of reach or breaking the block clears
++     * r.container inside the tick and must take the screen down with it. */
++    int gui_from_world = 0, gui_prev_container = 0;
++    gui_w = cfg->width;
++    gui_h = cfg->height;
++    gui_mx = gui_w / 2;
++    gui_my = gui_h / 2;
+ 
+     if (!gm_runtime_init(&r, cfg, err, sizeof err)) {
+         fprintf(stderr, "runtime: %s\n", err);
+         return 1;
+     }
+ 
++    /* [bedrock-rl] Let a held right mouse activate the crafting table or
++     * furnace under the crosshair (runtime.h use_activates_container). Only
++     * in GUI mode: without a screen to click, opening a container from the
++     * world would change what "use" does for existing non-GUI tasks. */
++    r.use_activates_container = rl_gui_enabled();
++
++    /* MAGMA_RANDTICK=0: disable live random block ticks (grass spread,
++     * leaf decay, fire, crops). The batched blaze env does not simulate
++     * randtick, so the verify_cpu gates run the real env with this set to
++     * compare exactly the subsystems blaze models. Default (unset) keeps
++     * upstream behavior (randticks ON in RL mode). */
++    {
++        const char *rt = getenv("MAGMA_RANDTICK");
++        if (rt && rt[0] == '0' && !rt[1]) r.randtick_enabled = 0;
++    }
++
+     if (cfg->snapshot_in &&
+         !rl_snapshot_load(&r, cfg->snapshot_in, err, sizeof err)) {
+         fprintf(stderr, "snapshot-in: %s\n", err);
+@@ -853,19 +954,120 @@ int gm_rl_run(const GmConfig *cfg) {
+             if ((int)rl_num(line, "interact", 0)) (void)rl_do_interact(&r);
+             if ((int)rl_num(line, "smelt", 0)) (void)rl_do_smelt(&r);
+         }
++        /* [bedrock-rl] MAGMA_GUI_RL: virtual mouse over the container
++         * screen. Runs after "interact" (so interact+gui_open on one line
++         * opens the table screen) and BEFORE gm_runtime_tick (inv_click
++         * is consumed inside the tick). */
++        if (rl_gui_enabled()) {
++            int go = (int)rl_num(line, "gui_open", -1);
++            double gx, gy;
++            if (go == 1) {
++                gui_open = 1;
++            } else if (go == 0 && gui_open) {
++                gui_open = 0;
++                gui_from_world = 0;
++                /* the runtime's own close: returns grid + cursor stacks AND
++                 * decrements a chest tile entity's open count, which a bare
++                 * gm_container_close would leak */
++                gm_runtime_close_container(&r);
++            }
++            gx = rl_num(line, "gui_cursor_x", -1);
++            gy = rl_num(line, "gui_cursor_y", -1);
++            if (gx >= 0) {
++                gui_mx = (int)gx;
++                if (gui_mx >= gui_w) gui_mx = gui_w - 1;
++            }
++            if (gy >= 0) {
++                gui_my = (int)gy;
++                if (gui_my >= gui_h) gui_my = gui_h - 1;
++            }
++            if (gui_open) {
++                int click = (int)rl_num(line, "gui_click", 0);
++                if (click == 1 || click == 2) {
++                    int slot = gm_screen_slot_at(r.container, gui_w, gui_h,
++                                                 gui_mx, gui_my);
++                    if (slot != -1) { /* -1: panel background, no-op;
++                                       * GMC_OUTSIDE: vanilla cursor drop */
++                        a.inv_click = 1;
++                        a.inv_slot = slot;
++                        a.inv_button = click == 2 ? 1 : 0;
++                        a.inv_type = CC_CLICK_PICKUP;
++                    }
++                }
++            }
++        }
+         {
+             double t0 = rl_now();
+             gm_runtime_tick(&r, a);
+             rl_prof[0] += rl_now() - t0;
+         }
++        /* [bedrock-rl] Follow the runtime's container across the tick: a
++         * right mouse on a placed table/furnace set r.container inside
++         * gm_runtime_tick, and the tick also drops it when the player walks
++         * out of reach or the block goes away. The screen is the visible
++         * half of that state, so it tracks it here, before this tick's
++         * frame is composited. The latch is on the container TRANSITION, not
++         * on gui_open: right-clicking a table while the player screen is
++         * already up switches the screen to the table, and the runtime still
++         * owns that screen's lifetime. An explicitly opened player screen
++         * that never became a world container is the agent's to close. */
++        if (rl_gui_enabled()) {
++            if (r.container != 0 && gui_prev_container == 0) {
++                gui_open = 1;
++                gui_from_world = 1;
++            } else if (r.container == 0 && gui_from_world) {
++                gui_open = 0;
++                gui_from_world = 0;
++            }
++            gui_prev_container = r.container;
++        }
+         if (frames) {
+-            int render = t >= cfg->frame_offset &&
++            /* [bedrock-rl] MAGMA_FRAME_LAZY=1: render + capture ONLY on
++             * explicit "snap":1 ticks. Periodic frames are disabled too:
++             * capture files are numbered by capture-CALL count, and the RL
++             * harness (MagmaEnv) counts frames by SNAP count - a periodic
++             * tick-0 render would offset every filename by one and also
++             * costs the full first-render (~3.4 s mesh build) at spawn.
++             * Non-snap ticks skip gm_frame_capture_write entirely
++             * (anim/fog/HUD bookkeeping; snaps tolerate the cosmetic
++             * drift). Tape workflows must NOT set this. */
++            if (fl_lazy < 0) {
++                const char *e = getenv("MAGMA_FRAME_LAZY");
++                fl_lazy = (e && *e == (char)49) ? 1 : 0;
++            }
++            int render = !fl_lazy && t >= cfg->frame_offset &&
+                          (t - cfg->frame_offset) % cfg->frame_every == 0;
+-            if (!gm_frame_capture_write(frames, &r, &a, render,
++            /* [bedrock-rl] "snap":1 forces a one-tick render so RL
++             * harnesses can pay raster cost only at turn boundaries
++             * (run with --frame-every <huge> to disable periodic frames) */
++            render = render || (int)rl_num(line, "snap", 0);
++            /* [bedrock-rl] MAGMA_GUI_RL: composite the open screen (+
++             * pointer) into this frame via the existing tape-replay hook
++             * in frame_capture.c (render-only; restored right after).
++             * With MAGMA_FRAME_LAZY=1 this only matters on snap ticks. */
++            if (rl_gui_enabled() && gui_open) {
++                /* gm_runtime_gui_view takes vanilla ScaledResolution coords
++                 * and frame_capture scales them back up, but the virtual
++                 * mouse and gm_screen_slot_at are in framebuffer pixels.
++                 * Divide so the drawn pointer lands on the slot the click
++                 * hits at any frame height (identity at 428x240, scale 1).
++                 * The round trip quantises the drawn pointer to a multiple
++                 * of the scale, which cannot cross a slot boundary because
++                 * every slot edge and the panel origin are multiples of it. */
++                int s = gm_screen_gui_scale(gui_h);
++                gm_screen_rl_pointer = 1;
++                gm_runtime_gui_view(&r, r.container, gui_mx / s, gui_my / s);
++            }
++            if ((render || !fl_lazy) &&
++                !gm_frame_capture_write(frames, &r, &a, render,
+                                         err, sizeof err)) {
+                 fprintf(stderr, "frames-out: %s\n", err);
+                 break;
+             }
++            if (rl_gui_enabled() && gui_open) {
++                gm_runtime_gui_view_clear(&r);
++                gm_screen_rl_pointer = 0;
++            }
+         }
+         rl_emit_obs(&r, cfg->rl_bin, (int)rl_num(line, "cam", 1));
+     }
+diff --git a/magma/game/runtime.c b/magma/game/runtime.c
+index 75ac7e6..baa2760 100644
+--- a/magma/game/runtime.c
++++ b/magma/game/runtime.c
+@@ -543,12 +543,22 @@ void gm_runtime_tick(GmRuntime *r, GmAction action) {
+             r->win_gen = g;
+         }
+     }
+-    if(action.do_place){
++    /* [bedrock-rl] use_activates_container: see runtime.h. do_place is the
++     * recorded press edge (tape); RL mode has none, so a held action.use is
++     * the activation trigger there. The held trigger is CONTAINER-ONLY: the
++     * other ids in this list are one-shot effects with no open/close state
++     * for the reopen guard to make idempotent, and holding the button on
++     * them repeats the effect every tick (a bed re-sleeps, advancing the
++     * world clock a full day per tick; an end portal frame eats one eye of
++     * ender per tick). Those stay on the press edge. */
++    if(action.do_place||(r->use_activates_container&&action.use)){
+         int hx,hy,hz,ax,ay,az;
+         if(gm_raycast_sel_reach(r->window,&r->sin_table,&r->player,PSV_REACH,
+                                 &hx,&hy,&hz,&ax,&ay,&az)>=0){
+             int wx=hx+r->ox,wz=hz+r->oz,id=gm_world_block(r->world,wx,hy,wz);
+-            if((id==58||id==61||id==62||id==54||id==120||id==26)&&gm_runtime_use_block(r,wx,hy,wz)){
++            int cont=id==58||id==61||id==62||id==54;
++            int usable=action.do_place?(cont||id==120||id==26):cont;
++            if(usable&&gm_runtime_use_block(r,wx,hy,wz)){
+                 action.do_place=0;action.use=0;
+             }
+         }
+@@ -1585,6 +1595,15 @@ static void runtime_close_container(GmRuntime *r)
+     r->active_chest = -1;
+ }
+ 
++void gm_runtime_close_container(GmRuntime *r)
++{
++    /* Runs for container 0 too: the player screen has its own live 2x2 grid
++     * and cursor stack, and closing it must return them like any other. */
++    if (!r) return;
++    runtime_close_container(r);
++    r->container = 0;
++}
++
+ /* Drop one chest slot stack as a ground EntityItem, including StoredEnchantments.
+  * Uses live overflow hold when the active table is full (not silent discard).
+  * Returns 1 if held (active or overflow), 0 if both caps rejected the stack. */
+@@ -1690,6 +1709,24 @@ int gm_runtime_use_block(GmRuntime *r, int wx, int wy, int wz) {
+     double dz = (wz + 0.5) - v.z;
+     if (dx*dx + dy*dy + dz*dz > 36.0) return 0;
+     int id = gm_world_block(r->world, wx, wy, wz);
++    /* [bedrock-rl] Re-activating the container already open at this exact
++     * position is a no-op. Every path below closes the current container
++     * first, which returns the live craft grid and cursor to the inventory -
++     * fine when switching containers, destructive when a held right mouse
++     * re-fires on the SAME block every tick while the agent is mid-craft.
++     * Scoped to use_activates_container so tape replay keeps its old
++     * close-and-reopen behavior, which is what a recorded Escape-then-
++     * right-click expects. The furnace and chest arms also require a live
++     * binding: --snapshot-in restores r->container but not active_furnace /
++     * active_chest, so without that check a restored screen would return 1
++     * forever and never rebind its tile entity. */
++    if (r->use_activates_container &&
++        r->container && r->container_wx==wx && r->container_wy==wy &&
++        r->container_wz==wz &&
++        (r->container==1 ? id==58
++         : r->container==2 ? ((id==61||id==62) && r->active_furnace>=0)
++         : r->container==3 ? (id==54 && r->active_chest>=0) : 0))
++        return 1;
+     if (id == 58) {
+         runtime_close_container(r); /* return any live grid/cursor before switching */
+         r->container=1; r->container_wx=wx; r->container_wy=wy; r->container_wz=wz;
+diff --git a/magma/game/runtime.h b/magma/game/runtime.h
+index 6ee9e03..f40a134 100644
+--- a/magma/game/runtime.h
++++ b/magma/game/runtime.h
+@@ -78,6 +78,15 @@ typedef struct GmRuntime {
+     int randtick_radius; /* Chebyshev chunk radius around player for the pass */
+     int container; /* 0 player 2x2, 1 crafting table, 2 furnace, 3 chest */
+     int container_wx, container_wy, container_wz;
++    /* [bedrock-rl] Activate the container block under the crosshair from a
++     * HELD right mouse (action.use) as well as from a recorded press edge
++     * (action.do_place). Tape replay carries the recorder's own do_place edge
++     * and must keep it as the only trigger, so this stays 0 there; RL mode
++     * has no recorder and sets it, which is what makes right-clicking a
++     * placed crafting table or furnace open its screen. gm_runtime_use_block
++     * is idempotent on the already-open container, so a held button does not
++     * reopen (and therefore does not dump) the live craft grid. */
++    int use_activates_container;
+     int active_furnace;
+     int active_chest;
+     ICStack craft_grid[9]; /* live craft matrix (container_live slot ids 36..44) */
+@@ -267,6 +276,12 @@ int gm_runtime_projectile_views(const GmRuntime *r, GmEntityView *out, int max);
+ int gm_runtime_craft(GmRuntime *r, int grid_width, const int inv_slots[9]);
+ /* Survival use at a world block. Verifies reach and block identity before opening. */
+ int gm_runtime_use_block(GmRuntime *r, int wx, int wy, int wz);
++/* Close whatever container is open, the way the runtime closes it when the
++ * player walks out of reach. Returns grid and cursor stacks to the inventory,
++ * decrements a chest tile entity's open count, and clears container to 0.
++ * Callers outside the runtime must use this rather than gm_container_close,
++ * which knows nothing about the chest tile entity. */
++void gm_runtime_close_container(GmRuntime *r);
+ int gm_runtime_furnace_insert(GmRuntime *r, int furnace_slot,
+                               int inventory_slot, int amount);
+ int gm_runtime_furnace_extract(GmRuntime *r, int furnace_slot, int amount);
+diff --git a/magma/game/screen.c b/magma/game/screen.c
+index 3694af6..93826ef 100644
+--- a/magma/game/screen.c
++++ b/magma/game/screen.c
+@@ -419,6 +419,22 @@ void gm_screen_draw(CrFramebuffer *fb, const struct GmRuntime *r, int mx, int my
+             gm_hud_fill(fb, sl->x, sl->y, sl->w, sl->h, highlight);
+     }
+ 
++    /* [bedrock-rl] virtual-mouse pointer for headless RL capture: the
++     * windowed client shows the OS cursor (capture disabled while a screen
++     * is open), but RL frames have none - without this an empty cursor
++     * between slots gives the agent zero position feedback. Small white
++     * cross with black outline. Drawn UNDER the cursor stack: the pointer
++     * and the held stack share the same 16x16 footprint, and the stack is
++     * the state the agent needs to read, so it wins. With nothing held the
++     * pointer is unobstructed, which is the case it exists for. */
++    if (gm_screen_rl_pointer) {
++        const CrRgba pb = {0, 0, 0, 255}, pw = {255, 255, 255, 255};
++        gm_hud_fill(fb, mx - 5 * s, my - 1 * s, 11 * s, 3 * s, pb);
++        gm_hud_fill(fb, mx - 1 * s, my - 5 * s, 3 * s, 11 * s, pb);
++        gm_hud_fill(fb, mx - 4 * s, my, 9 * s, 1 * s, pw);
++        gm_hud_fill(fb, mx, my - 4 * s, 1 * s, 9 * s, pw);
++    }
++
+     /* cursor stack rides the mouse, drawn last */
+     ICStack cur;
+     if (!gm_runtime_tape_gui_cursor_get(r, &cur)) cur = gm_player_cursor();
+@@ -427,3 +443,6 @@ void gm_screen_draw(CrFramebuffer *fb, const struct GmRuntime *r, int mx, int my
+     else if (hover >= 0)
+         draw_tooltip(fb, screen_item_name(screen_stack(r, hover).item), mx, my, s);
+ }
++
++/* [bedrock-rl] set by rl_mode when MAGMA_GUI_RL screens are open */
++int gm_screen_rl_pointer = 0;
+diff --git a/magma/game/screen.h b/magma/game/screen.h
+index 253bb84..87b385b 100644
+--- a/magma/game/screen.h
++++ b/magma/game/screen.h
+@@ -50,6 +50,11 @@ int gm_screen_gui_scale(int fb_h);
+  * pixels for gm_screen_draw / gm_screen_slot_at. */
+ void gm_screen_mouse_to_fb(int fb_w, int fb_h, int gmx, int gmy, int *mx, int *my);
+ 
++/* [bedrock-rl] when nonzero, gm_screen_draw also draws a small crosshair
++ * pointer at (mx,my) - virtual-mouse feedback for headless RL frame capture
++ * (the windowed client relies on the OS cursor instead). */
++extern int gm_screen_rl_pointer;
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/magma/game/test_container_live.c b/magma/game/test_container_live.c
+index 8e2d173..91bec88 100644
+--- a/magma/game/test_container_live.c
++++ b/magma/game/test_container_live.c
+@@ -42,6 +42,30 @@ int main(void) {
+     CHECK(gm_runtime_init(&r, &cfg, err, sizeof err), "runtime initializes");
+     if (fail) return 1;
+ 
++    /* ---- [bedrock-rl] gm_runtime_close_container is what rl_mode's
++     * "gui_open":0 calls. It must work on the PLAYER screen too: container 0
++     * has its own live 2x2 grid and cursor stack, and an early-out on
++     * container == 0 silently destroyed whatever the agent was holding.
++     * Runs first, while the inventory is still empty. ---- */
++    { CHECK(r.container == 0, "player screen is the current container");
++      CHECK(gm_runtime_set_inventory(&r, 0, 5, 4, 0), "seed four planks");
++      click(&r, 0, 0, CC_CLICK_PICKUP);            /* planks onto the cursor */
++      click(&r, GMC_GRID0, 0, CC_CLICK_PICKUP);    /* all four into a cell */
++      click(&r, GMC_GRID0, 0, CC_CLICK_PICKUP);    /* and back onto the cursor */
++      ICStack held = gm_player_cursor();
++      CHECK(held.item == 5 && held.count == 4, "cursor holds the planks");
++      gm_runtime_close_container(&r);
++      CHECK(r.container == 0, "player screen closes to container 0");
++      ICStack cur = gm_player_cursor();
++      CHECK(cur.item == 0 || cur.count == 0, "cursor emptied on close");
++      int planks = 0;
++      for (int s = 0; s < GMC_INV_SLOTS; ++s) {
++          ICStack t = slot(&r, s);
++          if (t.item == 5) { planks += t.count;
++              CHECK(gm_runtime_set_inventory(&r, s, 0, 0, 0), "clear planks"); }
++      }
++      CHECK(planks == 4, "cursor planks returned to the inventory"); }
++
+     /* ---- PICKUP across hotbar and main inventory ---- */
+     CHECK(gm_runtime_set_inventory(&r, 0, 1, 10, 0), "seed stone in hotbar 0");
+     click(&r, 0, 0, CC_CLICK_PICKUP);
+@@ -120,6 +144,44 @@ int main(void) {
+       CHECK(gm_container_click(&r, GMC_GRID0 + 2, 0, CC_CLICK_PICKUP),
+             "3x3 grid cell is usable at a table"); }
+ 
++    /* ---- [bedrock-rl] reopen guard: a held right mouse re-activates the
++     * same table every tick, and without the guard each activation would
++     * close and reopen the container, draining the live grid back into the
++     * inventory mid-craft. The guard is scoped to use_activates_container,
++     * so it must be a no-op while that is 0 (tape replay keeps its old
++     * close-and-reopen). ---- */
++    { GmPlayerView v; gm_runtime_view(&r, &v);
++      int bx = (int)v.x + 1, by = (int)v.y, bz = (int)v.z;
++      click(&r, 1, 0, CC_CLICK_PICKUP);                 /* 16 planks up */
++      click(&r, GMC_GRID0 + 4, 1, CC_CLICK_PICKUP);     /* one into a cell */
++      click(&r, 1, 0, CC_CLICK_PICKUP);                 /* rest back down */
++      CHECK(r.craft_grid[4].item == 5 && r.craft_grid[4].count == 1,
++            "one plank parked in a 3x3 cell");
++      CHECK(r.use_activates_container == 0,
++            "use_activates_container defaults off");
++      CHECK(gm_runtime_use_block(&r, bx, by + 1, bz), "reopen without guard");
++      CHECK(cc_is_empty(&r.craft_grid[4]),
++            "unguarded reopen drains the grid, as tape replay expects");
++
++      click(&r, 1, 0, CC_CLICK_PICKUP);
++      click(&r, GMC_GRID0 + 4, 1, CC_CLICK_PICKUP);
++      click(&r, 1, 0, CC_CLICK_PICKUP);
++      r.use_activates_container = 1;
++      for (int i = 0; i < 5; ++i)
++          CHECK(gm_runtime_use_block(&r, bx, by + 1, bz), "held reopen");
++      CHECK(r.craft_grid[4].item == 5 && r.craft_grid[4].count == 1,
++            "guarded reopen leaves the grid alone");
++      CHECK(r.container == 1, "still the table after held reopen");
++      /* switching to a DIFFERENT container must still drain the grid */
++      CHECK(gm_runtime_set_block(&r, bx, by + 1, bz + 1, 58, 0),
++            "place a second crafting table");
++      CHECK(gm_runtime_use_block(&r, bx, by + 1, bz + 1), "switch tables");
++      CHECK(cc_is_empty(&r.craft_grid[4]),
++            "switching containers still returns the grid");
++      r.use_activates_container = 0;
++      CHECK(gm_runtime_use_block(&r, bx, by + 1, bz), "back to the first table");
++    }
++
+     /* ---- close-return: items left in the grid come back on container close ---- */
+     click(&r, 1, 0, CC_CLICK_PICKUP);                 /* cursor: 4 planks from earlier */
+     click(&r, GMC_GRID0 + 2, 0, CC_CLICK_PICKUP);     /* leave them in the 3x3 cell */
+diff --git a/magma/game/test_runtime.c b/magma/game/test_runtime.c
+index 8cfa915..b0ed57e 100644
+--- a/magma/game/test_runtime.c
++++ b/magma/game/test_runtime.c
+@@ -602,6 +602,26 @@ int main(void) {
+         for(int x=6;x<=10;++x)for(int y=4;y<=6;++y)for(int z=7;z<=12;++z)
+             if(gm_world_block(r.world,x,y,z)==26){bx=x;by=y;bz=z;++bedparts;}
+         CHECK(bedparts==2,"bed item places linked foot and head blocks");
++        /* [bedrock-rl] use_activates_container widens the crosshair
++         * activation in gm_runtime_tick from the recorded do_place edge to a
++         * HELD action.use, which only container blocks may take: a bed has no
++         * open/close state for the reopen guard to make idempotent, and
++         * BlockBed sets world_time to the next dawn, so a held button would
++         * skip one in-game day per tick. */
++        { GmAction hold;memset(&hold,0,sizeof hold);
++          double dx=bx+0.5-8.5,dy=by+0.5-(5.0+1.62),dz=bz+0.5-8.5;
++          double d=sqrt(dx*dx+dy*dy+dz*dz);
++          gm_runtime_set_pose(&r,8.5,5,8.5,
++                              (float)(atan2(-dx,dz)*180.0/3.14159265358979),
++                              (float)(-asin(dy/d)*180.0/3.14159265358979));
++          hold.use=1;hold.hotbar_sel=-1;
++          r.use_activates_container=1;
++          long long t0=r.clock.world_time;
++          for(int i=0;i<5;++i)gm_runtime_tick(&r,hold);
++          CHECK(r.clock.world_time-t0<24000,
++                "held use on a bed does not skip a day per tick");
++          CHECK(r.container==0,"a bed never becomes an open container");
++          r.use_activates_container=0; }
+         r.dimension=-1;float hp=r.vitals.health;
+         CHECK(gm_runtime_use_block(&r,bx,by,bz),"using bed outside Overworld triggers explosion");
+         CHECK(gm_world_block(r.world,bx,by,bz)==0&&r.vitals.health<hp,
+diff --git a/magma/game/test_screen.c b/magma/game/test_screen.c
+index 6060867..c6784e7 100644
+--- a/magma/game/test_screen.c
++++ b/magma/game/test_screen.c
+@@ -48,15 +48,127 @@ static void check_container(int container, int fb_w, int fb_h, int want_slots)
+       if (fb_w == 854) CHECK(px == 250, "vanilla 854-wide origin floors to 250"); }
+ }
+ 
++/* Rect of one slot id in the given container, or a zero-w rect if absent. */
++static GmScreenSlot slot_of(int container, int fb_w, int fb_h, int id)
++{
++    GmScreenSlot slots[GMC_SLOT_COUNT], none = {id, 0, 0, 0, 0};
++    int n = gm_screen_layout(container, fb_w, fb_h, slots, GMC_SLOT_COUNT);
++    for (int i = 0; i < n; ++i)
++        if (slots[i].slot_id == id) return slots[i];
++    return none;
++}
++
++/* Vanilla gui-space slot origin -> framebuffer, for the exact-coordinate
++ * checks below. Mirrors gm_screen_layout's panel_origin_h. */
++static void gui_to_fb(int fb_w, int fb_h, int gx, int gy, int *x, int *y)
++{
++    int s = fb_h / 240 > 1 ? fb_h / 240 : 1;
++    int gw = (fb_w + s - 1) / s, gh = (fb_h + s - 1) / s;
++    *x = (gw - 176) / 2 * s + gx * s;
++    *y = (gh - 166) / 2 * s + gy * s;
++}
++
++/* ContainerWorkbench: the 3x3 InventoryCrafting is ROW-MAJOR from (30,17)
++ * on an 18px pitch and the result is at (124,35). container_live ids 36..44
++ * must follow that order, because the Python demos and any GUI reward code
++ * address grid cells by id and click by pixel. */
++static void check_workbench_geometry(int fb_w, int fb_h)
++{
++    for (int i = 0; i < 9; ++i) {
++        GmScreenSlot sl = slot_of(1, fb_w, fb_h, GMC_GRID0 + i);
++        int wx, wy;
++        char msg[96];
++        gui_to_fb(fb_w, fb_h, 30 + (i % 3) * 18, 17 + (i / 3) * 18, &wx, &wy);
++        snprintf(msg, sizeof msg,
++                 "3x3 cell %d (id %d) is row-major from gui (30,17)",
++                 i, GMC_GRID0 + i);
++        CHECK(sl.w != 0 && sl.x == wx && sl.y == wy, msg);
++    }
++    { GmScreenSlot sl = slot_of(1, fb_w, fb_h, GMC_RESULT);
++      int wx, wy;
++      gui_to_fb(fb_w, fb_h, 124, 35, &wx, &wy);
++      CHECK(sl.w != 0 && sl.x == wx && sl.y == wy,
++            "workbench result sits at gui (124,35)"); }
++    /* the 2x2 player screen exposes only cells 0,1,3,4 of the same id space,
++     * so the five cells a table adds must be unreachable there */
++    { static const int only_3x3[5] = {2, 5, 6, 7, 8};   /* cells, not ids */
++      int missing = 1;
++      for (int k = 0; k < 5; ++k)
++          if (slot_of(0, fb_w, fb_h, GMC_GRID0 + only_3x3[k]).w != 0)
++              missing = 0;
++      CHECK(missing, "player screen exposes no 3x3-only grid cell"); }
++}
++
++/* ContainerFurnace: input (56,17), fuel (56,53), output (116,35). */
++static void check_furnace_geometry(int fb_w, int fb_h)
++{
++    static const int gx[3] = {56, 56, 116}, gy[3] = {17, 53, 35};
++    for (int i = 0; i < 3; ++i) {
++        GmScreenSlot sl = slot_of(2, fb_w, fb_h, GMC_FURNACE0 + i);
++        int wx, wy;
++        char msg[96];
++        gui_to_fb(fb_w, fb_h, gx[i], gy[i], &wx, &wy);
++        snprintf(msg, sizeof msg, "furnace slot %d at gui (%d,%d)",
++                 i, gx[i], gy[i]);
++        CHECK(sl.w != 0 && sl.x == wx && sl.y == wy, msg);
++    }
++    CHECK(slot_of(2, fb_w, fb_h, GMC_RESULT).w == 0,
++          "furnace screen has no craft-result slot");
++    CHECK(slot_of(2, fb_w, fb_h, GMC_GRID0).w == 0,
++          "furnace screen has no craft grid");
++}
++
+ int main(void)
+ {
+-    /* 854x480 (product default, scale 2) and a scale-1 window */
+-    static const int sizes[][2] = {{854, 480}, {320, 200}};
+-    for (int z = 0; z < 2; ++z) {
++    /* 854x480 (product default, scale 2), 428x240 (the RL capture size the
++     * bedrock-rl harness runs, scale 1) and a smaller scale-1 window */
++    static const int sizes[][2] = {{854, 480}, {428, 240}, {320, 200}};
++    for (int z = 0; z < 3; ++z) {
+         check_container(0, sizes[z][0], sizes[z][1], 45); /* 36 + 4 armor + 2x2 + result */
+         check_container(1, sizes[z][0], sizes[z][1], 46); /* 36 + 3x3 grid + result */
+         check_container(2, sizes[z][0], sizes[z][1], 39); /* 36 + furnace 3 */
+         check_container(3, sizes[z][0], sizes[z][1], 63); /* 36 + chest 27 */
++        check_workbench_geometry(sizes[z][0], sizes[z][1]);
++        check_furnace_geometry(sizes[z][0], sizes[z][1]);
++    }
++
++    /* The exact 428x240 pixels scripts/gui_demo_common.py clicks. A layout
++     * change that moved a slot would silently make mouse-only crafting miss,
++     * and these are the only assertions that pin the two files together. */
++    CHECK(gm_screen_slot_at(1, 428, 240, 164, 62) == GMC_GRID0,
++          "428x240 (164,62) is craft cell 0");
++    CHECK(gm_screen_slot_at(1, 428, 240, 200, 98) == GMC_GRID0 + 8,
++          "428x240 (200,98) is craft cell 8");
++    CHECK(gm_screen_slot_at(1, 428, 240, 258, 80) == GMC_RESULT,
++          "428x240 (258,80) is the workbench result");
++    CHECK(gm_screen_slot_at(2, 428, 240, 190, 62) == GMC_FURNACE0,
++          "428x240 (190,62) is the furnace input");
++    CHECK(gm_screen_slot_at(2, 428, 240, 190, 98) == GMC_FURNACE0 + 1,
++          "428x240 (190,98) is the furnace fuel");
++    CHECK(gm_screen_slot_at(2, 428, 240, 250, 80) == GMC_FURNACE0 + 2,
++          "428x240 (250,80) is the furnace output");
++
++    /* rl_mode divides the framebuffer cursor by the gui scale before handing
++     * it to gm_runtime_gui_view, which multiplies it back. At scale 2 that
++     * loses the odd pixel, so check the drawn position still hit-tests to the
++     * slot the click used. */
++    for (int c = 1; c <= 2; ++c) {
++        GmScreenSlot slots[GMC_SLOT_COUNT];
++        int n = gm_screen_layout(c, 854, 480, slots, GMC_SLOT_COUNT), bad = 0;
++        for (int i = 0; i < n; ++i)
++            for (int dy = 0; dy < 32; dy += 7)
++                for (int dx = 0; dx < 32; dx += 7) {
++                    int mx = slots[i].x + dx % slots[i].w;
++                    int my = slots[i].y + dy % slots[i].h;
++                    int drawn_x, drawn_y;
++                    int s = gm_screen_gui_scale(480);
++                    gm_screen_mouse_to_fb(854, 480, mx / s, my / s,
++                                          &drawn_x, &drawn_y);
++                    if (gm_screen_slot_at(c, 854, 480, drawn_x, drawn_y) !=
++                        gm_screen_slot_at(c, 854, 480, mx, my))
++                        bad = 1;
++                }
++        CHECK(!bad, "scale-2 cursor round trip keeps the slot");
+     }
+ 
+     /* tape "gui" class name -> container kind (OPEN_DIVERGENCES #9) */

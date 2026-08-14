@@ -1,0 +1,27 @@
+diff --git a/magma/game/rl_mode.c b/magma/game/rl_mode.c
+index 3760f5b7702d6725add0556ef3a7f9c1e5e21e2a..bca17b4e199cab281158882592573058c4cc28e9 100644
+--- a/magma/game/rl_mode.c
++++ b/magma/game/rl_mode.c
+@@ -314,6 +314,9 @@ typedef struct {
+     int hotbar_ids[9];
+     int hotbar_counts[9];
+     int hotbar_meta[9];
++    int inventory_ids[27];
++    int inventory_counts[27];
++    int inventory_meta[27];
+     int hotbar_sel;
+     int container;                         /* 0 none/2x2, 1 table, 2 furnace */
+     int inv_counts[9];                     /* totals for rl_inv_ids order    */
+@@ -739,6 +742,12 @@ static void rl_emit_obs(GmRuntime *r, int bin, int want_cam) {
+             o.hotbar_meta[i] = v.hotbar_meta[i];
+             o.inv_counts[i] = rl_inv_count(r, rl_inv_ids[i]);
+         }
++        for (i = 0; i < 27; ++i) {
++            ICStack s = isr_get_stack(&r->player.inv, i + 9);
++            o.inventory_ids[i] = s.item;
++            o.inventory_counts[i] = s.count;
++            o.inventory_meta[i] = s.meta;
++        }
+         o.hotbar_sel = v.hotbar_sel;
+         o.container = r->container;
+         for (i = 0; i < nblk && i < RL_NBLOCKS; ++i) {

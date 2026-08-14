@@ -1,0 +1,32 @@
+worlds: 100
+samples_per_world: 1
+seed: 20260813
+max_world_attempts: 3000
+sampler:
+  type: bedrock_rl.sdg:RandomCases
+  variables:
+    movement_min_blocks: {uniform: [1.5, 2.0]}
+    movement_max_blocks: {uniform: [2.25, 2.75]}
+generator:
+  type: bedrock_rl.sdg:ScriptedEpisodeGenerator
+  task: task.yaml
+  assistant_content: bedrock_rl.sdg:observable_action_summary
+  policy:
+    type: bedrock_rl.sdg.policy.planned_mine:PlannedMinePolicy
+    behaviors:
+      hazards: {enabled: true}
+      descent: {enabled: true, max_drop_blocks: 1}
+      pickups: {enabled: true, attempts: 4, wait_ticks: 12, step_blocks: 0.5}
+  include_images: true
+executor:
+  type: bedrock_rl.sdg:ProcessExecutor
+  workers: auto
+  chunksize: 2
+  candidate_timeout_seconds: 120
+writer:
+  type: bedrock_rl.sdg:TrajectorySFTWriter
+  keep_latest_images: 1
+  require_grounded: true
+output: datasets/farm_one_log.sft.parquet
+rejections_output: datasets/farm_one_log.rejections.jsonl
+metadata: {task: farm_one_log_sdg, dataset: farm_one_log}

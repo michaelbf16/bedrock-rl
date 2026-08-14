@@ -1,0 +1,32 @@
+name: equip_pickaxe_grpo
+view: netherite-procedural
+goal: Select the iron pickaxe in the hotbar.
+goal_cu: |
+  Select the iron pickaxe in the hotbar by pressing its number key (1-9).
+  Do not click, move, mine, or open the inventory. Stop once it is selected.
+seeds: [36]
+init: {yaw: [-180, 180], pitch: [-5, 5]}
+max_lines: 1
+max_ticks: 40
+max_turns: 1
+max_ticks_per_turn: 5
+settle_ticks: 1
+decision_cost: 0.005
+initial_state:
+  player: {selected_item: wooden_pickaxe}
+  inventory:
+    - {item: iron_pickaxe, count: 1, slot: random_hotbar}
+    - {item: wooden_pickaxe, count: 1, slot: random_hotbar}
+    - {item: stone_pickaxe, count: 1, slot: random_hotbar}
+    - {item: torch, count: 16, slot: random_hotbar}
+    - {item: dirt, count: 32, slot: random_hotbar}
+    - {item: cobblestone, count: 32, slot: random_hotbar}
+    - {item: log, count: 16, slot: random_hotbar}
+    - {item: crafting_table, count: 1, slot: random_hotbar}
+    - {item: furnace, count: 1, slot: random_hotbar}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+no_commit: -0.25
+success:
+  type: selected_item
+  items: [iron_pickaxe]
+  reward: 1.0

@@ -1,0 +1,20 @@
+diff --git a/magma/game/runtime.c b/magma/game/runtime.c
+index 7ffcd4c..8993d62 100644
+--- a/magma/game/runtime.c
++++ b/magma/game/runtime.c
+@@ -559,7 +559,14 @@ void gm_runtime_tick(GmRuntime *r,GmAction action){
+             int wx=hx+r->ox,wz=hz+r->oz,id=gm_world_block(r->world,wx,hy,wz);
+             int cont=id==58||id==61||id==62||id==54;
+             int usable=action.do_place?(cont||id==120||id==26):cont;
+-            if(usable&&gm_runtime_use_block(r,wx,hy,wz)){
++            /* PlayerControllerMP.processRightClickBlock only calls a block's
++             * activation hook when the player is not sneaking or holds no
++             * item. With an item and shift held, the use therefore reaches
++             * ItemBlock.onItemUse and can place against a table, furnace or
++             * chest instead of opening it. */
++            int activates=usable&&(!cont||!action.sneak||
++                                    isr_is_empty(&held_now));
++            if(activates&&gm_runtime_use_block(r,wx,hy,wz)){
+                 action.do_place=0;action.use=0;
+             }
+         }

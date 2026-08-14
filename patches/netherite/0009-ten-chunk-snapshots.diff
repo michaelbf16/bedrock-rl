@@ -1,0 +1,17 @@
+diff --git a/magma/game/rl_mode.c b/magma/game/rl_mode.c
+index 2aba15d..bf16fea 100644
+--- a/magma/game/rl_mode.c
++++ b/magma/game/rl_mode.c
+@@ -406,7 +406,11 @@ static int rl_snapshot_write(GmRuntime *r, const char *path, int radius) {
+         ++h.n_items;
+     }
+     if (radius < 8) radius = 8;
+-    if (radius > 128) radius = 128;
++    /* Ten chunks: 320*128*320 = 13,107,200 cells, safely below the
++     * 2^24-cell bound enforced by both snapshot loaders.  This is large
++     * enough for broad resource discovery without making individual route
++     * searches unbounded. */
++    if (radius > 160) radius = 160;
+     h.rx0 = (int)floor(h.px + (double)h.ox) - radius;
+     h.rz0 = (int)floor(h.pz + (double)h.oz) - radius;
+     h.ry0 = 0; h.rnx = 2 * radius; h.rny = 128; h.rnz = 2 * radius;

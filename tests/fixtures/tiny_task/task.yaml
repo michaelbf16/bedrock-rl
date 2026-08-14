@@ -1,0 +1,9 @@
+schema_version: 1
+name: tiny_counter
+instruction: Reach a count of three.
+environment:
+  type: tests.fixtures.tiny_task.components:CounterEnvironment
+  target: 3
+verifier:
+  type: tests.fixtures.tiny_task.components:CounterReward
+metadata: {domain: test}

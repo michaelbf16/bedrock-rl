@@ -1,0 +1,43 @@
+defaults:
+  generator:
+    type: bedrock_rl.sdg:EpisodeDatasetGenerator
+    task: task.yaml
+    mode: rl
+  executor:
+    type: bedrock_rl.sdg:ProcessExecutor
+    workers: 16
+  writer: bedrock_rl.sdg:ParquetWriter
+
+jobs:
+  train:
+    count: 288
+    seed: 3201
+    sampler:
+      type: bedrock_rl.sdg:SeedCases
+      # Four worlds for each possible target slot.
+      seeds: [36, 39, 59, 60, 7, 8, 29, 34, 4, 24, 26, 28,
+              3, 5, 32, 46, 13, 20, 21, 44, 14, 18, 33, 42,
+              9, 11, 15, 17, 2, 12, 16, 30, 1, 6, 10, 22]
+    output: ../../data/equip_pickaxe_grpo_cu/rl_prompts.parquet
+    metadata: {split: train, task: equip_pickaxe_grpo}
+
+  dev:
+    count: 288
+    seed: 4201
+    sampler:
+      type: bedrock_rl.sdg:SeedCases
+      seeds: [10010, 10086, 10116, 10117, 10001, 10002, 10004, 10009,
+              10017, 10020, 10023, 10026, 10006, 10033, 10034, 10039,
+              10019, 10024, 10049, 10053, 10025, 10036, 10038, 10045,
+              10005, 10013, 10014, 10027, 10008, 10012, 10015, 10029,
+              10003, 10007, 10016, 10018]
+    output: ../../data/equip_pickaxe_grpo_cu/heldout_prompts.parquet
+    metadata: {split: dev, task: equip_pickaxe_grpo}
+
+  test:
+    count: 288
+    max_attempts: 4096
+    seed: 5201
+    sampler: bedrock_rl.sdg:RandomCases
+    output: ../../data/equip_pickaxe_grpo_cu/test_prompts.parquet
+    metadata: {split: test, task: equip_pickaxe_grpo, sealed: true}

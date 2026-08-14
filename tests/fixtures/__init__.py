@@ -1,0 +1,1 @@
+"""Test-only component fixtures."""

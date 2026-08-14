@@ -1,0 +1,16 @@
+count: 256
+max_attempts: 4096
+seed: 20260814
+sampler: bedrock_rl.sdg:RandomCases
+generator:
+  type: bedrock_rl.sdg:EpisodeDatasetGenerator
+  task: task.yaml
+  mode: rl
+executor:
+  type: bedrock_rl.sdg:ProcessExecutor
+  workers: auto
+  chunksize: 2
+writer: bedrock_rl.sdg:ParquetWriter
+output: datasets/farm_one_log.rl.parquet
+rejections_output: datasets/farm_one_log.rl.rejections.jsonl
+metadata: {task: farm_one_log_sdg, split: train}

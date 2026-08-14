@@ -1,0 +1,9 @@
+- name: bedrock
+  _target_: bedrock_rl.adapters.verl.agent_loop.NetheriteAgentLoop
+  keep_last_images: ${oc.env:BRL_KEEP_LATEST_IMAGES,0}
+  # Optional import-path extension points:
+  # These extend the built-in computer tool. A custom tool named `computer`
+  # replaces that one instead.
+  # core_tools: [{type: my_package.tools:Tool}]
+  # probes: [{type: my_package.state:Probe}]
+  # verifier: {type: my_package.reward:Verifier}

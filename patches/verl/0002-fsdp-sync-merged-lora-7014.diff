@@ -1,0 +1,151 @@
+From 6e3c39d610c9537a6e03726ec1dd58029b1e3313 Mon Sep 17 00:00:00 2001
+From: rongkunxue <rongkunxue@outlook.com>
+Date: Wed, 15 Jul 2026 20:32:24 +0800
+Subject: [PATCH] [fsdp] fix: sync merged LoRA weights before context exit
+ (#7014)
+
+This PR fixes a stale-weight bug in the FSDP LoRA rollout weight sync
+path when `actor_rollout_ref.model.lora.merge=True`.
+
+Before this change, `FSDPEngine.get_per_tensor_param()` built a
+`state_dict()` inside `merged_lora_context()`, but returned a lazy
+iterator that was consumed only after the context had already exited.
+Since `state_dict()` tensors alias the live module parameter storage,
+and `merged_lora_context()` restores the un-merged base weights on exit,
+the rollout engine could silently receive base weights without the LoRA
+delta.
+
+As a result, vLLM rollout weights stopped tracking the latest actor LoRA
+updates after the first step. In affected runs,
+`training/rollout_probs_diff_mean` kept increasing step by step, while
+`rollout_actor_probs_pearson_corr` gradually dropped and rewards did not
+improve.
+
+This PR keeps the merged LoRA context alive until every tensor is
+materialized and yielded to the rollout weight sync consumer.
+
+Relevant issue: https://github.com/verl-project/verl/issues/6782
+
+This does not duplicate an existing PR because issue #6782 currently has
+no linked PR on GitHub, and the following duplicate-work searches did
+not show an existing open PR for the same fix:
+
+- https://github.com/verl-project/verl/pulls?q=is%3Apr+is%3Aopen+6782
+-
+https://github.com/verl-project/verl/pulls?q=is%3Apr+is%3Aopen+merged_lora_context
+-
+https://github.com/verl-project/verl/pulls?q=is%3Apr+is%3Aopen+lora+merge+rollout+weight+sync
+
+### Test
+
+This change has been tested and verified to resolve
+[#6782](https://github.com/verl-project/verl/issues/6782).
+
+- `PATH="$PWD/.venv/bin:$PATH" .venv/bin/pre-commit run --all-files
+--show-diff-on-failure --color=never`
+- `pytest -q tests/workers/test_engine_workers_lora_sync.py` (16 passed)
+
+Full reproduction logs, validation results, and training behavior will
+be synchronized to the corresponding issue.
+
+### API and Usage Example
+
+No API or config changes.
+
+The existing `actor_rollout_ref.model.lora.merge=True` path now sends
+the merged base + LoRA weights correctly during rollout weight sync.
+
+### Design & Code Changes
+
+The root cause is that the previous merge path created a `state_dict()`
+inside `merged_lora_context()`, but materialized the tensors only after
+leaving the context. Since the context restores the original base
+weights on exit, the lazy consumer could receive restored base weights
+instead of merged LoRA weights.
+
+This PR changes the merged LoRA path to stream weights through a
+dedicated generator:
+
+- Keep `merged_lora_context(self.module, backup_adapters=True)` open
+inside the generator.
+- Normalize and convert weight keys while the merged weights are active.
+- Materialize `DTensor` values with `full_tensor()` before yielding
+them.
+- Clone plain tensors before yielding to avoid aliasing with restored
+module storage.
+- Move FSDP parameter offload into a `finally` block so offload happens
+after the generator is fully consumed.
+
+The unmerged LoRA path (`merge=False`) and non-LoRA path are unchanged.
+
+AI assistance was used to help draft this PR description. The human
+submitter reviewed every changed line, validated the behavior, and is
+responsible for the final PR.
+
+---------
+
+Co-authored-by: OpenAI Codex <codex@openai.com>
+---
+ verl/workers/engine/fsdp/transformer_impl.py | 39 ++++++++++++++++++--
+ 1 file changed, 36 insertions(+), 3 deletions(-)
+
+diff --git a/verl/workers/engine/fsdp/transformer_impl.py b/verl/workers/engine/fsdp/transformer_impl.py
+index 894588cb..e08d699a 100644
+--- a/verl/workers/engine/fsdp/transformer_impl.py
++++ b/verl/workers/engine/fsdp/transformer_impl.py
+@@ -850,9 +850,11 @@ class FSDPEngine(BaseEngine):
+                 if not base_sync_done:
+                     params = {replace_lora_wrapper(k, peft_config): v for k, v in params.items()}
+             else:  # merge lora
+-                with merged_lora_context(self.module, backup_adapters=True):
+-                    params = self.module.state_dict()
+-                    params = normalize_peft_param_name(params)
++                # state_dict() aliases the live parameter storage and merged_lora_context
++                # restores the un-merged base weights on exit, so tensors must be
++                # materialized while the context is still open (inside the generator).
++                # Materializing after exit silently sends base weights without adapters.
++                return self._merged_lora_per_tensor_param(), None
+         else:
+             params = self.module.state_dict()
+ 
+@@ -903,6 +905,37 @@ class FSDPEngine(BaseEngine):
+         peft_config_dict = peft_config.to_dict() if peft_config is not None else None
+         return per_tensor_param, peft_config_dict
+ 
++    def _merged_lora_per_tensor_param(self):
++        """Stream merged (base + LoRA) weights for rollout weight sync.
++
++        ``state_dict()`` returns tensors that alias the live FSDP parameter
++        storage, and ``merged_lora_context`` restores the un-merged base
++        weights when it exits. The context therefore must stay open until the
++        consumer has materialized every tensor: ``DTensor.full_tensor()``
++        produces a copy, so yielded tensors remain valid after the restore.
++        Consuming a state_dict captured inside the context after the context
++        has exited would silently send base weights without the adapters.
++        """
++        device = get_device_id()
++        try:
++            with merged_lora_context(self.module, backup_adapters=True):
++                params = normalize_peft_param_name(self.module.state_dict())
++                params = convert_weight_keys(params, getattr(self.module, "_fsdp_wrapped_module", self.module))
++                for name, param in params.items():
++                    yield (
++                        name,
++                        param.to(device, non_blocking=True).full_tensor().to(torch.bfloat16, non_blocking=True)
++                        if isinstance(param, DTensor)
++                        # clone: plain tensors also alias module storage, and bucketed
++                        # senders may flush after the restore has already run
++                        else param.detach().clone(),
++                    )
++        finally:
++            log_gpu_memory_usage("Before offload_fsdp_model_to_cpu", logger=logger)
++            if self._is_offload_param:
++                offload_fsdp_model_to_cpu(self.module)
++            log_gpu_memory_usage("After offload_fsdp_model_to_cpu", logger=logger)
++
+     def disable_adapter(self) -> ContextManager:
+         return self.module.disable_adapter()
+ 
+-- 
+2.34.1
+
