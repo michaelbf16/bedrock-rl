@@ -29,6 +29,14 @@ import yaml
 HERE = Path(__file__).resolve().parent
 TASKS_DIR = HERE / "tasks"
 
+# Provider-specific sampling extras, merged into every request for that
+# model. Kimi K2.6's default reasoning is unbounded on this prompt: it hits
+# any max_tokens ceiling mid-thought and returns no tool call at all, so its
+# episodes are run with reasoning off (noted in reports).
+MODEL_SAMPLING = {
+    "moonshotai/kimi-k2.6": {"reasoning": {"enabled": False}},
+}
+
 
 def load_dotenv(path):
     """Minimal KEY=VALUE .env loader; existing environment wins."""
@@ -54,12 +62,15 @@ def build_run_document(task_file, doc, seed, args, output):
                 "task_yaml": str(task_file),
                 "seed": int(seed),
                 "random_seed": int(seed),
+                # Without a frames root the engine runs frameless, t0_png is
+                # None, and the model gets a TEXT-ONLY prompt: the eval would
+                # silently test blind play. See NetheriteEnvironment/Episode.
+                "frames_root": str(output.parent / f"frames_seed{seed}"),
             },
             "verifier": "bedrock_rl.adapters.netherite.reward:EpisodeReward",
         },
         "model": {
-            "type": "bedrock_rl.adapters.chat_completions:"
-                    "ChatCompletionsModel",
+            "type": "eval_components:TextEnvelopeModel",
             "model": args.model,
             "base_url": args.base_url,
             "api_key_env": args.api_key_env,
@@ -78,7 +89,8 @@ def build_run_document(task_file, doc, seed, args, output):
         # keeps the harness from cutting a long task off at the default 8.
         "max_turns": int(doc.get("max_turns", 8)),
         "sampling": {"temperature": args.temperature,
-                     "max_tokens": args.max_tokens},
+                     "max_tokens": args.max_tokens,
+                     **MODEL_SAMPLING.get(args.model, {})},
         "output": str(output),
     }
 
@@ -97,7 +109,10 @@ def main():
     parser.add_argument("--timeout", type=int, default=1800,
                         help="wall-clock seconds allowed per episode")
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--max-tokens", type=int, default=1024)
+    # Reasoning models (Kimi K2.6, GPT-5 family) spend completion budget on
+    # hidden reasoning BEFORE the tool call; at 1024 they can return an empty
+    # message with no tool call at all.
+    parser.add_argument("--max-tokens", type=int, default=6144)
     parser.add_argument("--keep-images", type=int, default=2,
                         help="screenshots kept in the model's context window")
     parser.add_argument("--results", default=None,
@@ -162,12 +177,15 @@ def main():
               flush=True)
         record = {"task": doc["name"], "seed": seed,
                   "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        env = dict(os.environ)
+        env["PYTHONPATH"] = (str(HERE) + os.pathsep + env["PYTHONPATH"]
+                             if env.get("PYTHONPATH") else str(HERE))
         try:
             with log_path.open("w") as log:
                 proc = subprocess.run(
                     ["uv", "run", "bedrock", "trial", str(run_yaml)],
                     stdout=log, stderr=subprocess.STDOUT,
-                    timeout=args.timeout, cwd=HERE.parents[1])
+                    timeout=args.timeout, cwd=HERE.parents[1], env=env)
             record["returncode"] = proc.returncode
             record["ok"] = proc.returncode == 0 and out.exists()
         except subprocess.TimeoutExpired:
