@@ -1,0 +1,27 @@
+name: t3_open_furnace
+view: netherite-procedural
+goal: Place your furnace and open it.
+goal_cu: |
+  Place the furnace from your hand and open it. Aim the crosshair at the
+  top of a ground block a couple of blocks ahead, right click once to place
+  the furnace, then aim at the placed furnace and right click it to open
+  its smelting screen.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [10, 25]}
+max_lines: 8
+max_ticks: 2000
+max_turns: 10
+max_ticks_per_turn: 200
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: furnace}
+  inventory:
+    - {item: furnace, count: 1, slot: random_hotbar}
+    - {item: dirt, count: 16, slot: random_hotbar}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: container_opened
+  kind: furnace
+  reward: 1.0

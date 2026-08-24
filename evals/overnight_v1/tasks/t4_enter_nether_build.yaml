@@ -1,0 +1,40 @@
+name: t4_enter_nether_build
+view: netherite-procedural
+goal: Build a nether portal from your obsidian, light it, and enter the Nether.
+goal_cu: |
+  Travel to the Nether. You have fourteen obsidian and flint and steel.
+  Build a portal frame on the flat ground: a rectangle four blocks wide
+  and five blocks tall, where only the interior two-by-three opening must
+  be bordered by obsidian (corners are not required, ten obsidian is
+  enough). Place blocks by aiming at a block face and right clicking with
+  obsidian selected; pillar or aim upward for the higher rows. Then select
+  the flint and steel, right click an inside face of the frame to ignite
+  the portal, walk into the purple portal, and stand still inside it until
+  you are teleported (about four seconds).
+seeds: [11, 22, 33]
+init: {yaw: [-10, 10], pitch: [-5, 5]}
+max_lines: 12
+max_ticks: 15000
+max_turns: 60
+max_ticks_per_turn: 400
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: obsidian}
+  inventory:
+    - {item: obsidian, count: 14, slot: random_hotbar}
+    - {item: flint_and_steel, count: 1, slot: random_hotbar}
+  spawn:
+    points:
+      - {x: 0.5, y: 65, z: 0.5, yaw: 0, pitch: 10}
+  blocks:
+    - {block: air, x: [-7, 7], y: [65, 75], z: [-7, 7]}
+    - {block: stone, x: [-7, 7], y: 64, z: [-7, 7]}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: died
+  reward: -1.0
+success:
+  type: dimension_changed
+  dimension: -1
+  reward: 1.0

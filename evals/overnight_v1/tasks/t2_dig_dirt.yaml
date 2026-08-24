@@ -1,0 +1,33 @@
+name: t2_dig_dirt
+view: netherite-procedural
+goal: Dig up three dirt or grass blocks with your hands.
+goal_cu: |
+  Break three dirt or grass blocks. Aim the crosshair at the ground near
+  your feet and hold left click until the block breaks; repeat until three
+  blocks are broken. No tool is needed.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [10, 25]}
+max_lines: 10
+max_ticks: 5000
+max_turns: 20
+max_ticks_per_turn: 400
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20}
+  spawn:
+    hazard_clearance: 1
+    constraints:
+      - {block: dirt, min_distance: 0, max_distance: 6}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success:
+  type: block_broken
+  block: [dirt, grass_block]
+  count: 3
+  reward: 1.0

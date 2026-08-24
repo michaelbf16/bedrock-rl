@@ -1,0 +1,35 @@
+name: t3_mine_stone
+view: netherite-procedural
+goal: Dig down to stone and mine one stone block with your pickaxe.
+goal_cu: |
+  Mine one stone block and collect the cobblestone it drops. A wooden
+  pickaxe is already selected. Dig down or into a hillside through the
+  dirt: aim at a block, hold left click until it breaks, and continue
+  until you reach grey stone, then break one stone block and walk over
+  the drop to collect it. Do not dig straight down more than a few blocks
+  at a time; step and stair down instead.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [15, 30]}
+max_lines: 10
+max_ticks: 8000
+max_turns: 30
+max_ticks_per_turn: 600
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: wooden_pickaxe}
+  inventory:
+    - {item: wooden_pickaxe, count: 1, slot: random_hotbar}
+    - {item: torch, count: 8, slot: random_hotbar}
+  spawn:
+    hazard_clearance: 1
+    constraints:
+      - {block: stone, min_distance: 0, max_distance: 8}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success: {type: item_gained, item: cobblestone, count: 1, reward: 1.0}

@@ -1,0 +1,30 @@
+name: t3_gather_three_logs
+view: netherite-procedural
+goal: Harvest three logs from nearby trees and collect them.
+goal_cu: |
+  Collect three logs. Find nearby trees, break trunk log blocks by holding
+  left click with the crosshair on them, and walk into each drop to pick it
+  up. Repeat until you have gained three logs.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-8, 8]}
+max_lines: 12
+max_ticks: 15000
+max_turns: 50
+max_ticks_per_turn: 800
+settle_ticks: 2
+decision_cost: 0.0
+snapshot_radius: 32
+initial_state:
+  player: {health: 20, food: 20, saturation: 20}
+  spawn:
+    hazard_clearance: 1
+    constraints:
+      - {block: log, min_distance: 4, max_distance: 12}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success: {type: item_gained, item: log, count: 3, reward: 1.0}

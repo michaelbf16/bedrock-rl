@@ -1,0 +1,26 @@
+name: t2_place_block
+view: netherite-procedural
+goal: Place one cobblestone block on the ground.
+goal_cu: |
+  Place one cobblestone block. Cobblestone is already selected in your
+  hotbar. Aim the crosshair at the top of a ground block a couple of blocks
+  ahead of you and right click once to place.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [15, 30]}
+max_lines: 6
+max_ticks: 1000
+max_turns: 6
+max_ticks_per_turn: 100
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: cobblestone}
+  inventory:
+    - {item: cobblestone, count: 32, slot: random_hotbar}
+    - {item: dirt, count: 16, slot: random_hotbar}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: block_placed
+  block: cobblestone
+  reward: 1.0

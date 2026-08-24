@@ -1,0 +1,28 @@
+name: t1_walk_forward
+view: netherite-procedural
+goal: Walk at least 10 blocks away from where you started.
+goal_cu: |
+  Walk until you are at least 10 blocks from your starting point. Hold the
+  forward key; steer around obstacles or jump over them if you get stuck.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-5, 5]}
+max_lines: 6
+max_ticks: 1600
+max_turns: 5
+max_ticks_per_turn: 400
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success:
+  type: moved_distance
+  value: 10
+  reward: 1.0

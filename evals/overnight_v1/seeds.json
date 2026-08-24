@@ -1,0 +1,127 @@
+{
+  "t1_face_tree": [
+    11,
+    22,
+    33
+  ],
+  "t1_look_at_sky": [
+    11,
+    22,
+    33
+  ],
+  "t1_open_inventory": [
+    11,
+    22,
+    33
+  ],
+  "t1_select_flint": [
+    11,
+    22,
+    33
+  ],
+  "t1_select_pickaxe": [
+    11,
+    22,
+    33
+  ],
+  "t1_walk_forward": [
+    11,
+    22,
+    33
+  ],
+  "t2_break_one_log": [
+    11,
+    22,
+    33
+  ],
+  "t2_dig_dirt": [
+    11,
+    22,
+    33
+  ],
+  "t2_place_block": [
+    11,
+    22,
+    33
+  ],
+  "t2_place_torch": [
+    11,
+    22,
+    33
+  ],
+  "t2_reach_water": [
+    11,
+    33,
+    55
+  ],
+  "t3_craft_planks": [
+    11,
+    22,
+    33
+  ],
+  "t3_craft_sticks": [
+    11,
+    22,
+    33
+  ],
+  "t3_craft_table": [
+    11,
+    22,
+    33
+  ],
+  "t3_craft_torches": [
+    11,
+    22,
+    33
+  ],
+  "t3_gather_three_logs": [
+    11,
+    22,
+    33
+  ],
+  "t3_mine_stone": [
+    11,
+    22,
+    33
+  ],
+  "t3_open_furnace": [
+    11,
+    22,
+    33
+  ],
+  "t3_use_crafting_table": [
+    11,
+    22,
+    33
+  ],
+  "t4_craft_wooden_pickaxe": [
+    11,
+    22,
+    33
+  ],
+  "t4_enter_nether_build": [
+    11,
+    22,
+    33
+  ],
+  "t4_enter_nether_lit": [
+    11,
+    22,
+    33
+  ],
+  "t4_mine_iron_arena": [
+    11,
+    22,
+    33
+  ],
+  "t4_smelt_iron": [
+    11,
+    22,
+    33
+  ],
+  "t4_stone_pickaxe_scratch": [
+    11,
+    22,
+    33
+  ]
+}

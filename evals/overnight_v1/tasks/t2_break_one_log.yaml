@@ -1,0 +1,30 @@
+name: t2_break_one_log
+view: netherite-procedural
+goal: Find a nearby tree, harvest one natural log, and collect it.
+goal_cu: |
+  Find a nearby tree, break one log block of its trunk, and collect the
+  dropped log. Walk up to the trunk, aim the crosshair at a log block, and
+  hold left click until it breaks, then walk into the drop to pick it up.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-8, 8]}
+max_lines: 10
+max_ticks: 8000
+max_turns: 30
+max_ticks_per_turn: 600
+settle_ticks: 2
+decision_cost: 0.0
+snapshot_radius: 32
+initial_state:
+  player: {health: 20, food: 20, saturation: 20}
+  spawn:
+    hazard_clearance: 1
+    constraints:
+      - {block: log, min_distance: 4, max_distance: 12}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success: {type: item_gained, item: log, count: 1, reward: 1.0}
