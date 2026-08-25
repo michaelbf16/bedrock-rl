@@ -1,5 +1,4 @@
 .env
 __pycache__/
 *.pyc
-evals/*/results/
 .bedrock/

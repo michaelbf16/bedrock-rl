@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Summarize an overnight sweep: pass rate per task and per tier.
+"""Summarize a sweep: pass rate per task and per tier.
 
-    uv run python evals/overnight_v1/summarize.py \
-        evals/overnight_v1/results/<model slug>
+    uv run python benchmark/summarize.py \
+        benchmark/results/<model slug>
 """
 
 import json

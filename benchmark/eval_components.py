@@ -1,4 +1,4 @@
-"""Eval-local agent components; run_evals.py puts this dir on PYTHONPATH."""
+"""Eval-local agent components; run.py puts this dir on PYTHONPATH."""
 
 import json
 

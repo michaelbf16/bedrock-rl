@@ -1,4 +1,4 @@
-# overnight_v1
+# benchmark
 
 25 Minecraft eval tasks in four difficulty tiers, run as independent
 `bedrock trial` episodes against any OpenAI-compatible endpoint
@@ -16,20 +16,20 @@ and live state, never by the model's text.
 
 ```bash
 # 1. one-time, no API cost: verify 3 workable world seeds per task
-uv run python evals/overnight_v1/prequalify.py
+uv run python benchmark/prequalify.py
 
 # 2. sanity-check the episode list
 export OPENROUTER_API_KEY=...
-uv run python evals/overnight_v1/run_evals.py \
+uv run python benchmark/run.py \
     --model anthropic/claude-sonnet-4.5 --dry-run
 
-# 3. the overnight sweep (resumable: re-run the same command to continue)
-uv run python evals/overnight_v1/run_evals.py \
+# 3. the sweep (resumable: re-run the same command to continue)
+uv run python benchmark/run.py \
     --model anthropic/claude-sonnet-4.5
 
-# 4. morning
-uv run python evals/overnight_v1/summarize.py \
-    evals/overnight_v1/results/anthropic_claude-sonnet-4.5
+# 4. summarize
+uv run python benchmark/summarize.py \
+    benchmark/results/anthropic_claude-sonnet-4.5
 ```
 
 The model needs vision and tool calling. Useful knobs: `--tasks t1_...`

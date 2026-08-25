@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Overnight eval driver: every task x N seeds through `bedrock trial`.
+"""Eval driver: every task x N seeds through `bedrock trial`.
 
 Each episode is one `bedrock trial` subprocess against an OpenAI-compatible
 endpoint (OpenRouter by default), so an engine or API crash loses one
@@ -7,7 +7,7 @@ episode, never the sweep. Episodes whose trajectory JSON already exists are
 skipped, which makes the sweep resumable by re-running the same command.
 
     export OPENROUTER_API_KEY=...
-    uv run python evals/overnight_v1/run_evals.py \
+    uv run python benchmark/run.py \
         --model anthropic/claude-sonnet-4.5
 
 Run prequalify.py first; it verifies, per task, which world seeds can
@@ -125,7 +125,7 @@ def main():
         load_dotenv(HERE.parents[1] / ".env")
     if not args.dry_run and not os.environ.get(args.api_key_env):
         sys.exit(f"{args.api_key_env} is not set; export it or put it in "
-                 "the repo-root .env before an overnight run.")
+                 "the repo-root .env before a run.")
 
     seeds_path = HERE / "seeds.json"
     qualified = (json.loads(seeds_path.read_text())

@@ -2,12 +2,11 @@
 """Verify, per task, which world seeds can draw a legal start. No API calls.
 
 A task with spawn constraints (a tree within 4-12 blocks, water within 14,
-...) cannot start on a seed whose terrain never satisfies them, and an
-overnight sweep must not discover that at 3am. This draws a real engine
-episode for each candidate seed and keeps the first N that work, writing
-seeds.json for run_evals.py.
+...) cannot start on a seed whose terrain never satisfies them. This draws a
+real engine episode for each candidate seed and keeps the first N that work,
+writing seeds.json for run.py.
 
-    uv run python evals/overnight_v1/prequalify.py
+    uv run python benchmark/prequalify.py
 """
 
 import argparse
