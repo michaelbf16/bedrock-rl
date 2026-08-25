@@ -1,0 +1,33 @@
+name: t2_reach_water
+view: netherite-procedural
+goal: Walk into the nearby water.
+goal_cu: |
+  There is water near you. Find it, walk to it, and step into it so that
+  you are standing in the water. Turn around with mouse_move if you do not
+  see it at first.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-5, 10]}
+max_lines: 8
+max_ticks: 4000
+max_turns: 15
+max_ticks_per_turn: 400
+settle_ticks: 2
+decision_cost: 0.0
+snapshot_radius: 32
+initial_state:
+  player: {health: 20, food: 20}
+  spawn:
+    hazard_clearance: 1
+    constraints:
+      - {block: water, min_distance: 5, max_distance: 14}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success:
+  type: player_fluid_state
+  block: water
+  reward: 1.0

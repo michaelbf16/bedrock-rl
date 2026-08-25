@@ -1,0 +1,26 @@
+name: t3_craft_planks
+view: netherite-procedural
+goal: Craft planks from the logs in your inventory.
+goal_cu: |
+  Craft planks. You have logs. Press e to open the inventory, left click
+  the log stack to pick it up, right click once on a cell of the 2x2
+  crafting grid to place one log, then left click the planks in the result
+  slot to take them. Press e to close when done.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-5, 5]}
+max_lines: 8
+max_ticks: 3000
+max_turns: 15
+max_ticks_per_turn: 200
+settle_ticks: 1
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: log}
+  inventory:
+    - {item: log, count: 4, slot: random_hotbar}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: item_crafted
+  item: planks
+  reward: 1.0

@@ -1,0 +1,36 @@
+name: t4_craft_wooden_pickaxe
+view: netherite-procedural
+goal: Craft a wooden pickaxe starting from the logs in your inventory.
+goal_cu: |
+  Craft a wooden pickaxe. You have three logs and nothing else. The chain:
+  open the inventory with e and craft the logs into planks in the 2x2 grid;
+  craft four planks into a crafting table; craft two planks (a vertical
+  column) into sticks; close the inventory, place the crafting table on the
+  ground and right click it to open its 3x3 grid; put three planks across
+  the top row and two sticks in a vertical column below the middle plank;
+  take the wooden pickaxe from the result slot. In a grid, left click picks
+  up a stack and right click places one item.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [5, 20]}
+max_lines: 10
+max_ticks: 10000
+max_turns: 40
+max_ticks_per_turn: 400
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: log}
+  inventory:
+    - {item: log, count: 3, slot: random_hotbar}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success:
+  type: item_crafted
+  item: wooden_pickaxe
+  reward: 1.0

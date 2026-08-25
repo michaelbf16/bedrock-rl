@@ -1,0 +1,28 @@
+name: t3_craft_torches
+view: netherite-procedural
+goal: Craft torches from the coal and sticks in your inventory.
+goal_cu: |
+  Craft torches. You have coal and sticks. Press e to open the inventory,
+  place one coal in a cell of the 2x2 crafting grid and one stick in the
+  cell directly below it (left click picks up a stack, right click places
+  one item), put any leftovers back in free slots, then left click the
+  torches in the result slot to take them.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-5, 5]}
+max_lines: 8
+max_ticks: 3000
+max_turns: 15
+max_ticks_per_turn: 200
+settle_ticks: 1
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: coal}
+  inventory:
+    - {item: coal, count: 4, slot: random_hotbar}
+    - {item: stick, count: 4, slot: random_hotbar}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: item_crafted
+  item: torch
+  reward: 1.0

@@ -1,0 +1,32 @@
+name: t4_mine_iron_arena
+view: netherite-procedural
+goal: Mine the iron ore in front of you.
+goal_cu: |
+  Mine one iron ore block. There is a small pillar of iron ore a few blocks
+  ahead of you, slightly to your right, and a stone pickaxe is already
+  selected. Walk up to it, put the crosshair on an iron ore block, and hold
+  left click until it breaks.
+seeds: [11, 22, 33]
+init: {yaw: [-10, 10], pitch: [-5, 5]}
+max_lines: 8
+max_ticks: 2500
+max_turns: 12
+max_ticks_per_turn: 300
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: stone_pickaxe}
+  inventory:
+    - {item: stone_pickaxe, count: 1, slot: random_hotbar}
+  spawn:
+    points:
+      - {x: 0.5, y: 65, z: 0.5, yaw: 0, pitch: 5}
+  blocks:
+    - {block: air, x: [-7, 7], y: [65, 73], z: [-7, 7]}
+    - {block: stone, x: [-7, 7], y: 64, z: [-7, 7]}
+    - {block: iron_ore, x: 2, y: [65, 66], z: 3}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: block_broken
+  block: iron_ore
+  reward: 1.0

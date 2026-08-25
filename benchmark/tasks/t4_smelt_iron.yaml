@@ -1,0 +1,31 @@
+name: t4_smelt_iron
+view: netherite-procedural
+goal: Smelt an iron ingot in a furnace.
+goal_cu: |
+  Smelt one iron ingot. You have a furnace, iron ore, and coal. Place the
+  furnace on the ground (aim at a ground block and right click), right
+  click the furnace to open it, put the iron ore in the top input slot and
+  the coal in the bottom fuel slot (left click picks up a stack, left click
+  places it), then wait for the smelt to finish. Each ore takes about ten
+  seconds; close the screen and wait, or stay in the screen, then take the
+  ingot from the output slot on the right.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [10, 25]}
+max_lines: 10
+max_ticks: 8000
+max_turns: 30
+max_ticks_per_turn: 800
+settle_ticks: 2
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20, selected_item: furnace}
+  inventory:
+    - {item: furnace, count: 1, slot: random_hotbar}
+    - {item: iron_ore, count: 3, slot: random_hotbar}
+    - {item: coal, count: 4, slot: random_hotbar}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: item_smelted
+  item: iron_ingot
+  reward: 1.0

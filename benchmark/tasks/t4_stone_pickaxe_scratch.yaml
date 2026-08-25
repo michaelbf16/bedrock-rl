@@ -1,0 +1,38 @@
+name: t4_stone_pickaxe_scratch
+view: netherite-procedural
+goal: Starting with nothing, craft a stone pickaxe.
+goal_cu: |
+  Craft a stone pickaxe starting from an empty inventory. The full chain:
+  harvest logs from a nearby tree (hold left click on trunk blocks and
+  collect the drops); craft planks, a crafting table, and sticks in the
+  inventory 2x2 grid (e opens it); place the table and craft a wooden
+  pickaxe on its 3x3 grid (three planks across the top, two sticks below
+  the middle); dig to stone and mine three cobblestone with the wooden
+  pickaxe; return to the table and craft the stone pickaxe (three
+  cobblestone across the top, two sticks below the middle).
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-8, 8]}
+max_lines: 12
+max_ticks: 20000
+max_turns: 80
+max_ticks_per_turn: 800
+settle_ticks: 2
+decision_cost: 0.0
+snapshot_radius: 32
+initial_state:
+  player: {health: 20, food: 20, saturation: 20}
+  spawn:
+    hazard_clearance: 1
+    constraints:
+      - {block: log, min_distance: 4, max_distance: 12}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+fail:
+  type: any
+  of:
+    - {type: player_fluid_state, block: lava}
+    - {type: died}
+  reward: -1.0
+success:
+  type: item_crafted
+  item: stone_pickaxe
+  reward: 1.0

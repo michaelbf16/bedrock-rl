@@ -1,0 +1,22 @@
+name: t1_look_at_sky
+view: netherite-procedural
+goal: Look up at the sky.
+goal_cu: |
+  Pan the camera to look almost straight up at the sky, then stop. Use
+  mouse_move toward the top of the screen; repeat if one pan is not enough.
+seeds: [11, 22, 33]
+init: {yaw: [-180, 180], pitch: [-5, 5]}
+max_lines: 4
+max_ticks: 400
+max_turns: 4
+max_ticks_per_turn: 60
+settle_ticks: 1
+decision_cost: 0.0
+initial_state:
+  player: {health: 20, food: 20}
+  spawn: {hazard_clearance: 1}
+  world: {mode: survival, difficulty: normal, weather: clear, time: 1000, mobs: false}
+success:
+  type: pitch_below
+  value: -60
+  reward: 1.0
