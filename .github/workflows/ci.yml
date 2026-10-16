@@ -190,7 +190,7 @@ jobs:
             requirements/verl-runtime.txt | head -1)"
           test -n "$TRANSFORMERS"
           uv pip install --torch-backend=cpu \
-            torch==2.9.0 torchvision==0.24.0 \
+            torch==2.9.0 torchvision==0.24.0 torchdata==0.11.0 \
             "transformers==$TRANSFORMERS" accelerate==1.14.0
           VERL_SHA="$(sed -n 's/^VERL_SHA=\([0-9a-f]\{40\}\)$/\1/p' \
             bin/setup_deps.sh)"
@@ -213,11 +213,16 @@ jobs:
           uv pip install --no-deps -e "$VERL_HOME"
           uv run --no-sync python -c \
             "from bedrock_rl.adapters.verl.agent_loop import NetheriteAgentLoop"
+          uv run --no-sync python \
+            "$VERL_HOME/tests/trainer/ppo/test_reward_group_metrics.py"
+          uv run --no-sync python \
+            "$VERL_HOME/tests/trainer/ppo/test_ray_trainer_reward_group_metrics.py"
           uv run --no-sync python -m unittest \
             tests.test_consistency_regressions \
             tests.test_verl_agent_loop_contract \
             tests.test_verl_distillation_contract \
-            tests.test_verl_padding_contract
+            tests.test_verl_padding_contract \
+            tests.test_verl_reward_group_metrics_contract
 
   docker-gpu:
     name: GPU training image builds at every pin

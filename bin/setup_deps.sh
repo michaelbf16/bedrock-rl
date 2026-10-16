@@ -23,7 +23,8 @@ NETHERITE_SHA="$(cat "$ROOT/patches/netherite/PINNED_SHA")"
 # verl is pinned to a SHA, not a tag, and carries every diff in
 # patches/verl/. Two are LoRA fixes that landed after this revision and
 # are needed for a LoRA RL run to be correct rather than merely to start;
-# the third fixes Qwen-VL's multi-axis position IDs in the no-padding path:
+# the third fixes Qwen-VL's multi-axis position IDs in the no-padding path,
+# and the fourth adds GRPO group-composition observability:
 #
 #   0001  #6688  clones LoRA weights out of the reused IPC buffer before
 #                add_lora, so the adapter vLLM serves is not overwritten
@@ -31,6 +32,9 @@ NETHERITE_SHA="$(cat "$ROOT/patches/netherite/PINNED_SHA")"
 #   0002  #7014  syncs merged LoRA weights before the FSDP context exits
 #   0003         packs the sequence, rather than the four MRoPE axes, as
 #                the ragged dimension during actor log-prob/update passes
+#   0004         logs the actual zero/nonzero reward contrast of each GRPO
+#                uid group, plus authoritative success composition only from
+#                Bedrock's namespaced rollout field
 #
 # Frame/context selection lives in this repo's custom agent loop, so it no
 # longer patches verl or assumes a model family's image-token constants.
@@ -377,12 +381,13 @@ sync_pinned_checkout "$VERL_HOME" "$VERL_SHA" verl
 
 # Every diff in patches/verl/. Unlike the engine stack these are checked
 # INDEPENDENTLY rather than by the prefix rule, which is valid because
-# the three touch different files (vllm_rollout/utils.py,
-# engine/fsdp/transformer_impl.py, and workers/utils/padding.py) and so
-# never appear in each other's
-# context. That is a property of this set,
-# not a general one: a future diff editing a file another already touched
-# has to move to the prefix rule the engine patches use above.
+# all four patch ownership sets are disjoint: 0001 touches
+# vllm_rollout/utils.py, 0002 engine/fsdp/transformer_impl.py, 0003
+# workers/utils/padding.py; 0004 owns ray_trainer.py plus three new files:
+# reward_group_metrics.py and two reward-group test modules. They therefore
+# never appear in each other's context. That is a property of this set, not
+# a general one: a future diff editing a file another already touched has
+# to move to the prefix rule the engine patches use above.
 #
 # A patch that neither reverse-checks nor applies is a HARD failure, not
 # a warning. Printing to stderr and carrying on leaves a half-patched
@@ -423,9 +428,10 @@ $VERL_PATCH.
 
 It is neither already applied nor cleanly applicable, so that tree is
 NOT the trainer this repo pins. 0001 and 0002 are on the LoRA
-weight-sync path; 0003 is on Qwen-VL's actor input path. Without them a
-run can silently serve stale adapter weights or fail after rollout when
-it recomputes log probabilities.
+weight-sync path; 0003 is on Qwen-VL's actor input path; 0004 is at the
+GRPO advantage boundary. Without them a run can silently serve stale
+adapter weights, fail after rollout when it recomputes log probabilities,
+or hide zero-contrast reward groups.
 
 Nothing further was changed. Choose one of these.
   restore just the files this patch owns, then run this again

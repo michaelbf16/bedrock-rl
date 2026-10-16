@@ -27,6 +27,18 @@ least two rollouts per prompt and the launcher refuses `rollout_n: 1`. ReMax
 adds the greedy baseline rollout itself. REINFORCE++ computes token returns and
 whitens them over valid response tokens.
 
+Each GRPO step reports `grpo/reward_group/*` from the exact sequence rewards
+and sibling `uid` values passed to the advantage estimator. Zero-contrast and
+nonzero-contrast group counts and ratios describe reward composition without
+assuming that equal rewards mean all-fail or all-pass. The Bedrock agent loop
+also propagates `bool(session.episode.success)` under the rollout-owned
+`bedrock_rl_rollout_episode_success` field, so `grpo/success_group/*`
+separately reports all-unsuccessful, all-successful, and mixed groups. An
+absent field emits no success composition; a present malformed or misaligned
+field raises instead of silently mislabeling groups. Generic dataset or reward
+fields named `success` are ignored, and reward metadata is forbidden from
+overwriting the rollout-owned field.
+
 The default is the common RLVR recipe with reference KL disabled. It is not
 silently fixed to that choice:
 

@@ -56,6 +56,9 @@ from bedrock_rl.env.episode import (NO_TOOL_CALL_REWARD,
                                     TOOL_USE_REWARD_FLOOR)
 
 
+VERL_EPISODE_SUCCESS_FIELD = "bedrock_rl_rollout_episode_success"
+
+
 def _frames_root(required: bool):
     """A stable parent for process-owned frame dirs unless configured."""
     configured = (os.environ.get("BRL_FRAMES_ROOT") or "").strip()
@@ -676,7 +679,9 @@ class NetheriteAgentLoop(AgentLoopBase):
                 "trajectory_id": trajectory.id,
                 "trajectory_path": trajectory_path,
                 "context_masked_assistant_turns": masked,
-                "success": bool(session.episode.success),
+                # Rollout-owned and namespaced so dataset/reward fields cannot
+                # masquerade as authoritative environment outcomes.
+                VERL_EPISODE_SUCCESS_FIELD: bool(session.episode.success),
             })
             mm = {"images": final_images} if final_images else {}
             return AgentLoopOutput(

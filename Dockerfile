@@ -266,11 +266,12 @@ RUN set -ex; \
 # it trained. Nothing downstream notices.
 #
 # Each diff is checked on its own rather than only the topmost, which is
-# valid HERE because the three touch different files
-# (vllm_rollout/utils.py, engine/fsdp/transformer_impl.py, and
-# workers/utils/padding.py) and so never
-# appear in each other's context. bin/setup_deps.sh checks the same way.
-# A future diff that edits a file another one already touched breaks that
+# valid HERE because all four patch ownership sets are disjoint: the first
+# three own vllm_rollout/utils.py, engine/fsdp/transformer_impl.py, and
+# workers/utils/padding.py; 0004 owns ray_trainer.py plus three new files:
+# reward_group_metrics.py and two reward-group test modules. They never
+# appear in each other's context. bin/setup_deps.sh checks the same way. A
+# future diff that edits a file another one already touched breaks that
 # assumption and has to move to the prefix rule the engine patches use.
 #
 # The counted glob is not decoration: an unmatched glob would hand `git
@@ -289,16 +290,20 @@ RUN set -ex; set -- /opt/patches/verl/*.diff; test "$#" -ge 1; \
 # The clone and the patch apply are the two RUNs above, and there is
 # exactly one of each: the fetch-by-name form checks the object it got is
 # the object it asked for, and the reverse check is the only thing that
-# separates a diff that landed from one that was a no-op. The two LoRA
-# fixes bin/setup_deps.sh calls required for a LoRA RL run to be CORRECT
-# rather than merely to start (#6688 clones the adapter out of the reused
-# IPC buffer before add_lora, #7014 syncs merged weights before the FSDP
-# context exits) are the reason that matters: without them a run samples
+# separates a diff that landed from one that was a no-op. Four patches are
+# shipped: the two LoRA fixes bin/setup_deps.sh calls required for a run
+# to be CORRECT rather than merely to start are the reason that matters:
+# #6688 clones the adapter out of the reused IPC buffer before add_lora,
+# and #7014 syncs merged weights before the FSDP context exits. Without
+# them a run samples
 # its rollouts from an adapter that is not the one being trained and says
 # nothing at all about it, so the failure is a silently worse curve. This
-# image applied neither, and the same defect was found live on two of
+# image applied neither LoRA fix, and the same defect was found live on two of
 # four training boxes, which is why tests/test_dockerfile.py asserts the
-# whole directory is applied rather than trusting a sentence.
+# whole directory is applied rather than trusting a sentence. The other two
+# patches fix Qwen-VL ragged position IDs and expose GRPO group reward
+# composition; they are covered by the same counted, independently
+# reverse-checked stack.
 #
 # nvidia-cutlass-dsl<4.7 is here for the same reason it is in
 # bin/setup_deps.sh, which has the long version: it is a dependency of

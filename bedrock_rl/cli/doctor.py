@@ -9,11 +9,12 @@ training venv, verl itself, flash-attn, the model weights and free GPUs.
 
 The verl patch row is the newest and it is here because the divergence
 it reports was found the expensive way. patches/verl/ carries two fixes
-on the LoRA weight-sync path and one for Qwen-VL ragged position IDs.
-A box without them can silently serve stale adapter weights or fail only
-after an expensive rollout. This box had exactly that state while two
-others did not, so "which trainer is this" is a question every box has
-to be able to answer about itself.
+on the LoRA weight-sync path, one for Qwen-VL ragged position IDs, and
+GRPO group reward-composition metrics. A box without them can silently
+serve stale adapter weights, fail only after an expensive rollout, or
+hide zero-contrast training groups. This box had exactly that state
+while two others did not, so "which trainer is this" is a question every
+box has to be able to answer about itself.
 
 For multi-node runs the training venv, pinned engine, model weights path, and
 repo commit must match on every node. The corresponding checks print values to
@@ -239,11 +240,12 @@ def verl_patches(root, patches):
     does not, by the reverse-check rule.
 
     Each diff is asked about INDEPENDENTLY rather than by the prefix rule
-    the engine patches use. That is valid for this set because the three
-    touch three different files and so never appear in each other's
-    context; it is a property of the set and not a general one. The same
-    reasoning, and the same set, is in bin/setup_deps.sh and the
-    Dockerfile.
+    the engine patches use. That is valid for this four-patch set because
+    their ownership sets are disjoint and so never appear in each other's
+    context; 0004 owns ray_trainer.py plus three new files:
+    reward_group_metrics.py and two reward-group test modules. It is a
+    property of the set and not a general one. The same reasoning, and the
+    same set, is in bin/setup_deps.sh and the Dockerfile.
     """
     have, missing = [], []
     for p in patches:

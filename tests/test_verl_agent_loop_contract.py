@@ -298,6 +298,9 @@ class VerlAgentLoopContractTests(unittest.TestCase):
             self.assertEqual(output.multi_modal_data["images"], [image0])
             self.assertEqual(output.extra_fields[
                 "context_masked_assistant_turns"], 0)
+            self.assertIs(output.extra_fields[
+                module.VERL_EPISODE_SUCCESS_FIELD], True)
+            self.assertNotIn("success", output.extra_fields)
             self.assertEqual(len(saved), 1)
             validate_transcript(saved[0].messages)
             results = saved[0].metadata["tool_results"]

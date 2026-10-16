@@ -1,0 +1,502 @@
+diff --git a/tests/trainer/ppo/test_ray_trainer_reward_group_metrics.py b/tests/trainer/ppo/test_ray_trainer_reward_group_metrics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce135955e496714b7f2b20389b745710ec6eb109
+--- /dev/null
++++ b/tests/trainer/ppo/test_ray_trainer_reward_group_metrics.py
+@@ -0,0 +1,115 @@
++# Copyright 2026 Bytedance Ltd. and/or its affiliates
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import ast
++import inspect
++import textwrap
++import unittest
++from types import SimpleNamespace
++
++import numpy as np
++import torch
++
++from verl.trainer.ppo import ray_trainer
++from verl.trainer.ppo.reward_group_metrics import ROLLOUT_EPISODE_SUCCESS_FIELD
++
++
++def _named_call(node, name):
++    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
++
++
++def _grpo_guard(node):
++    return (
++        isinstance(node, ast.If)
++        and isinstance(node.test, ast.Compare)
++        and any(isinstance(op, ast.Eq) for op in node.test.ops)
++        and any(
++            isinstance(item, ast.Attribute)
++            and item.attr == "GRPO"
++            and isinstance(item.value, ast.Name)
++            and item.value.id == "AdvantageEstimator"
++            for item in ast.walk(node.test)
++        )
++    )
++
++
++class TestRayTrainerRewardGroupMetrics(unittest.TestCase):
++    def test_trainer_hook_executes_with_post_kl_globally_aligned_batch(self):
++        batch = SimpleNamespace(
++            batch={
++                # These pre-KL scores have zero contrast in both groups.
++                "token_level_scores": torch.tensor([
++                    [1.0, 0.0], [2.0, 0.0], [1.0, 0.0], [2.0, 0.0],
++                ]),
++                # The post-KL values consumed by GRPO have contrast for uid-a.
++                "token_level_rewards": torch.tensor([
++                    [0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [0.5, 0.0],
++                ]),
++            },
++            non_tensor_batch={
++                # Noncontiguous siblings model the aligned global arrays after
++                # rollout repeat and token balancing.
++                "uid": np.array(["uid-a", "uid-b", "uid-a", "uid-b"], dtype=object),
++                ROLLOUT_EPISODE_SUCCESS_FIELD: np.array(
++                    [False, True, True, True], dtype=object
++                ),
++            },
++        )
++
++        metrics = ray_trainer.compute_grpo_group_metrics_for_batch(batch)
++
++        self.assertEqual(metrics["grpo/reward_group/zero_contrast/count"], 1)
++        self.assertEqual(metrics["grpo/reward_group/nonzero_contrast/count"], 1)
++        self.assertEqual(metrics["grpo/reward_group/contrast/max"], 1.0)
++        self.assertEqual(metrics["grpo/success_group/mixed/count"], 1)
++        self.assertEqual(metrics["grpo/success_group/all_successful/count"], 1)
++
++    def test_fit_calls_hook_in_grpo_guard_immediately_before_advantage(self):
++        tree = ast.parse(textwrap.dedent(inspect.getsource(ray_trainer.RayPPOTrainer.fit)))
++        function = tree.body[0]
++        self.assertIsInstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
++
++        matches = []
++        for parent in ast.walk(function):
++            for _, statements in ast.iter_fields(parent):
++                if not isinstance(statements, list):
++                    continue
++                for index, statement in enumerate(statements[:-1]):
++                    if not _grpo_guard(statement):
++                        continue
++                    matches.append((statement, statements[index + 1]))
++
++        self.assertEqual(len(matches), 1, "expected one explicit GRPO metrics guard")
++        guard, next_statement = matches[0]
++        self.assertEqual(len(guard.body), 1)
++
++        update_statement = guard.body[0]
++        self.assertIsInstance(update_statement, ast.Expr)
++        update_call = update_statement.value
++        self.assertIsInstance(update_call, ast.Call)
++        self.assertIsInstance(update_call.func, ast.Attribute)
++        self.assertEqual(update_call.func.attr, "update")
++        self.assertEqual(len(update_call.args), 1)
++        hook_call = update_call.args[0]
++        self.assertTrue(_named_call(hook_call, "compute_grpo_group_metrics_for_batch"))
++        self.assertEqual(len(hook_call.args), 1)
++        self.assertIsInstance(hook_call.args[0], ast.Name)
++        self.assertEqual(hook_call.args[0].id, "batch")
++
++        self.assertIsInstance(next_statement, ast.Assign)
++        self.assertTrue(_named_call(next_statement.value, "compute_advantage"))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/trainer/ppo/test_reward_group_metrics.py b/tests/trainer/ppo/test_reward_group_metrics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c02468de88cdbfadf2ae506f0f82e41d4588fee3
+--- /dev/null
++++ b/tests/trainer/ppo/test_reward_group_metrics.py
+@@ -0,0 +1,181 @@
++# Copyright 2026 Bytedance Ltd. and/or its affiliates
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import unittest
++
++from verl.trainer.ppo.reward_group_metrics import (
++    ROLLOUT_EPISODE_SUCCESS_FIELD,
++    compute_grpo_group_reward_metrics,
++    compute_grpo_group_reward_metrics_from_batch,
++    update_non_tensor_batch_with_reward_extra_info,
++)
++
++
++class _Array:
++    def __init__(self, values):
++        self.values = values
++
++    def detach(self):
++        return self
++
++    def cpu(self):
++        return self
++
++    def tolist(self):
++        return self.values
++
++
++class _SequenceRewardTensor:
++    """Tiny torch-shaped value used to keep this helper suite dependency-free."""
++
++    def __init__(self, token_rewards):
++        self.token_rewards = token_rewards
++        self.sum_dim = None
++
++    def sum(self, dim):
++        self.sum_dim = dim
++        return _Array([sum(row) for row in self.token_rewards])
++
++    def detach(self):
++        return self
++
++    def cpu(self):
++        return self
++
++
++class _Batch:
++    def __init__(self, token_scores, token_rewards, uids, **non_tensor_batch):
++        self.rewards = _SequenceRewardTensor(token_rewards)
++        self.batch = {
++            "token_level_scores": token_scores,
++            "token_level_rewards": self.rewards,
++        }
++        self.non_tensor_batch = {"uid": _Array(uids), **non_tensor_batch}
++
++
++class TestGrpoGroupRewardMetrics(unittest.TestCase):
++    def test_reward_contrast_and_authoritative_success_composition(self):
++        metrics = compute_grpo_group_reward_metrics(
++            sample_uids=["mixed", "mixed", "miss", "miss", "pass", "pass"],
++            sequence_rewards=[-1.0, 1.0, 0.0, 0.0, 2.0, 2.0],
++            successes=[False, True, False, False, True, True],
++        )
++
++        self.assertEqual(metrics["grpo/reward_group/count"], 3)
++        self.assertEqual(metrics["grpo/reward_group/zero_contrast/count"], 2)
++        self.assertEqual(metrics["grpo/reward_group/nonzero_contrast/count"], 1)
++        self.assertAlmostEqual(metrics["grpo/reward_group/zero_contrast/ratio"], 2 / 3)
++        self.assertAlmostEqual(metrics["grpo/reward_group/contrast/mean"], 2 / 3)
++        self.assertEqual(metrics["grpo/success_group/all_unsuccessful/count"], 1)
++        self.assertEqual(metrics["grpo/success_group/all_successful/count"], 1)
++        self.assertEqual(metrics["grpo/success_group/mixed/count"], 1)
++
++    def test_equal_rewards_do_not_imply_success_composition(self):
++        metrics = compute_grpo_group_reward_metrics(
++            sample_uids=["group", "group"],
++            sequence_rewards=[0.25, 0.25],
++        )
++
++        self.assertEqual(metrics["grpo/reward_group/zero_contrast/count"], 1)
++        self.assertFalse(any(key.startswith("grpo/success_group/") for key in metrics))
++
++    def test_equal_rewards_can_have_mixed_authoritative_success(self):
++        metrics = compute_grpo_group_reward_metrics(
++            sample_uids=["group", "group"],
++            sequence_rewards=[0.25, 0.25],
++            successes=[False, True],
++        )
++
++        self.assertEqual(metrics["grpo/reward_group/zero_contrast/count"], 1)
++        self.assertEqual(metrics["grpo/success_group/mixed/count"], 1)
++
++    def test_rejects_non_boolean_success_values(self):
++        with self.assertRaisesRegex(TypeError, "authoritative booleans"):
++            compute_grpo_group_reward_metrics(
++                sample_uids=["group"],
++                sequence_rewards=[1.0],
++                successes=[1],
++            )
++
++    def test_trainer_hook_uses_post_kl_rewards_and_aligned_namespaced_fields(self):
++        batch = _Batch(
++            # Pre-KL scores have zero contrast in both groups. The post-KL
++            # rewards below deliberately have contrast only for uid-a.
++            token_scores=[[1.0], [2.0], [1.0], [2.0]],
++            token_rewards=[[0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [0.5, 0.0]],
++            # Noncontiguous order models the globally aligned arrays after
++            # repeat and balance operations.
++            uids=["uid-a", "uid-b", "uid-a", "uid-b"],
++            success=_Array([True, True, True, True]),
++            **{ROLLOUT_EPISODE_SUCCESS_FIELD: _Array([False, True, True, True])},
++        )
++
++        metrics = compute_grpo_group_reward_metrics_from_batch(batch)
++
++        self.assertEqual(batch.rewards.sum_dim, -1)
++        self.assertEqual(metrics["grpo/reward_group/zero_contrast/count"], 1)
++        self.assertEqual(metrics["grpo/reward_group/nonzero_contrast/count"], 1)
++        self.assertEqual(metrics["grpo/reward_group/contrast/max"], 1.0)
++        self.assertEqual(metrics["grpo/success_group/mixed/count"], 1)
++        self.assertEqual(metrics["grpo/success_group/all_successful/count"], 1)
++
++    def test_trainer_hook_ignores_generic_success_and_fails_closed_on_bad_namespace(self):
++        generic_only = _Batch(
++            token_scores=[[0.0], [0.0]],
++            token_rewards=[[0.0], [0.0]],
++            uids=["uid", "uid"],
++            success=_Array([False, False]),
++        )
++        metrics = compute_grpo_group_reward_metrics_from_batch(generic_only)
++        self.assertFalse(any(key.startswith("grpo/success_group/") for key in metrics))
++
++        malformed = _Batch(
++            token_scores=[[0.0], [0.0]],
++            token_rewards=[[0.0], [0.0]],
++            uids=["uid", "uid"],
++            **{ROLLOUT_EPISODE_SUCCESS_FIELD: _Array([False, 1])},
++        )
++        with self.assertRaisesRegex(TypeError, "authoritative booleans"):
++            compute_grpo_group_reward_metrics_from_batch(malformed)
++
++        misaligned = _Batch(
++            token_scores=[[0.0], [0.0]],
++            token_rewards=[[0.0], [0.0]],
++            uids=["uid", "uid"],
++            **{ROLLOUT_EPISODE_SUCCESS_FIELD: _Array([False])},
++        )
++        with self.assertRaisesRegex(ValueError, "same length"):
++            compute_grpo_group_reward_metrics_from_batch(misaligned)
++
++    def test_reward_extra_info_cannot_overwrite_rollout_outcomes(self):
++        batch = _Batch(
++            token_scores=[[0.0]],
++            token_rewards=[[0.0]],
++            uids=["uid"],
++            **{ROLLOUT_EPISODE_SUCCESS_FIELD: _Array([True])},
++        )
++
++        with self.assertRaisesRegex(ValueError, "rollout-owned field"):
++            update_non_tensor_batch_with_reward_extra_info(
++                batch,
++                {ROLLOUT_EPISODE_SUCCESS_FIELD: _Array([False])},
++            )
++        self.assertEqual(
++            batch.non_tensor_batch[ROLLOUT_EPISODE_SUCCESS_FIELD].tolist(),
++            [True],
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/verl/trainer/ppo/ray_trainer.py b/verl/trainer/ppo/ray_trainer.py
+index d1eaa7bd132b6daf6e263fcdecc3338e50a37fc9..d9c352b08b8ca18106c919da402c43e82d0ec8b0 100644
+--- a/verl/trainer/ppo/ray_trainer.py
++++ b/verl/trainer/ppo/ray_trainer.py
+@@ -48,6 +48,10 @@ from verl.trainer.ppo.metric_utils import (
+     compute_variance_proxy_metrics,
+     process_validation_metrics,
+ )
++from verl.trainer.ppo.reward_group_metrics import (
++    compute_grpo_group_reward_metrics_from_batch,
++    update_non_tensor_batch_with_reward_extra_info,
++)
+ from verl.trainer.ppo.reward import extract_reward
+ from verl.trainer.ppo.utils import (
+     Role,
+@@ -73,6 +77,11 @@ from verl.workers.rollout.llm_server import LLMServerManager
+ from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
+ 
+ 
++def compute_grpo_group_metrics_for_batch(batch: DataProto) -> dict[str, float | int]:
++    """Trainer-facing hook for metrics at the GRPO advantage boundary."""
++    return compute_grpo_group_reward_metrics_from_batch(batch)
++
++
+ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
+     """Apply KL penalty to the token-level rewards.
+ 
+@@ -1591,7 +1600,10 @@ class RayPPOTrainer:
+                         batch.batch["token_level_scores"] = reward_tensor
+ 
+                         if reward_extra_infos_dict:
+-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
++                            update_non_tensor_batch_with_reward_extra_info(
++                                batch,
++                                {k: np.array(v) for k, v in reward_extra_infos_dict.items()},
++                            )
+ 
+                         # compute rewards. apply_kl_penalty if available
+                         if self.config.algorithm.use_kl_in_reward:
+@@ -1622,6 +1634,11 @@ class RayPPOTrainer:
+                             "norm_adv_by_std_in_grpo", True
+                         )  # GRPO adv normalization factor
+ 
++                        if self.config.algorithm.adv_estimator == AdvantageEstimator.GRPO:
++                            # This observes the post-shaping, post-KL rewards and
++                            # globally aligned non-tensor fields consumed below.
++                            metrics.update(compute_grpo_group_metrics_for_batch(batch))
++
+                         batch = compute_advantage(
+                             batch,
+                             adv_estimator=self.config.algorithm.adv_estimator,
+diff --git a/verl/trainer/ppo/reward_group_metrics.py b/verl/trainer/ppo/reward_group_metrics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7284e0ea36adc4944f55e58bb4d7accea4f37b58
+--- /dev/null
++++ b/verl/trainer/ppo/reward_group_metrics.py
+@@ -0,0 +1,137 @@
++# Copyright 2026 Bytedance Ltd. and/or its affiliates
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++"""Pure helpers for group-relative reward observability."""
++
++from collections import defaultdict
++from collections.abc import Hashable, Sequence
++from typing import Any
++
++
++ROLLOUT_EPISODE_SUCCESS_FIELD = "bedrock_rl_rollout_episode_success"
++
++
++def _composition_metrics(prefix: str, counts: dict[str, int]) -> dict[str, float | int]:
++    total = sum(counts.values())
++    metrics: dict[str, float | int] = {f"{prefix}/count": total}
++    for name, count in counts.items():
++        metrics[f"{prefix}/{name}/count"] = count
++        metrics[f"{prefix}/{name}/ratio"] = count / total if total else 0.0
++    return metrics
++
++
++def _per_sample_list(values: Any, field: str) -> list[Any]:
++    if hasattr(values, "tolist"):
++        values = values.tolist()
++    if not isinstance(values, (list, tuple)):
++        raise TypeError(f"{field} must be a one-dimensional per-sample sequence")
++    return list(values)
++
++
++def update_non_tensor_batch_with_reward_extra_info(
++    batch: Any,
++    reward_extra_info: dict[str, Any],
++) -> None:
++    """Merge reward metadata without overwriting rollout-owned outcomes."""
++    if ROLLOUT_EPISODE_SUCCESS_FIELD in reward_extra_info:
++        raise ValueError(
++            f"reward_extra_info cannot set rollout-owned field {ROLLOUT_EPISODE_SUCCESS_FIELD!r}"
++        )
++    batch.non_tensor_batch.update(reward_extra_info)
++
++
++def compute_grpo_group_reward_metrics(
++    sample_uids: Sequence[Hashable],
++    sequence_rewards: Sequence[float],
++    successes: Sequence[bool] | None = None,
++) -> dict[str, float | int]:
++    """Summarize the groups that GRPO will compare on one training step.
++
++    ``sequence_rewards`` must be the scalar rewards passed to GRPO after any
++    reward shaping or KL penalty. Reward composition is reported in terms of
++    zero versus nonzero within-group contrast; equal rewards do not imply
++    either success or failure.
++
++    Success composition is optional and is emitted only when the caller has
++    an authoritative, per-sample boolean. It is never inferred from rewards.
++    """
++    if len(sample_uids) != len(sequence_rewards):
++        raise ValueError("sample_uids and sequence_rewards must have the same length")
++    if successes is not None:
++        if len(successes) != len(sample_uids):
++            raise ValueError("successes and sample_uids must have the same length")
++        if any(type(success) is not bool for success in successes):
++            raise TypeError("successes must contain only authoritative booleans")
++
++    rewards_by_uid: dict[Any, list[float]] = defaultdict(list)
++    successes_by_uid: dict[Any, list[bool]] = defaultdict(list)
++    for sample_idx, (uid, reward) in enumerate(zip(sample_uids, sequence_rewards, strict=True)):
++        rewards_by_uid[uid].append(float(reward))
++        if successes is not None:
++            successes_by_uid[uid].append(successes[sample_idx])
++
++    contrasts = [max(rewards) - min(rewards) for rewards in rewards_by_uid.values()]
++    zero_contrast_count = sum(contrast == 0.0 for contrast in contrasts)
++    metrics = _composition_metrics(
++        "grpo/reward_group",
++        {
++            "zero_contrast": zero_contrast_count,
++            "nonzero_contrast": len(contrasts) - zero_contrast_count,
++        },
++    )
++    if contrasts:
++        metrics.update(
++            {
++                "grpo/reward_group/contrast/min": min(contrasts),
++                "grpo/reward_group/contrast/mean": sum(contrasts) / len(contrasts),
++                "grpo/reward_group/contrast/max": max(contrasts),
++            }
++        )
++
++    if successes is not None:
++        success_counts = {
++            "all_unsuccessful": 0,
++            "all_successful": 0,
++            "mixed": 0,
++        }
++        for group_successes in successes_by_uid.values():
++            if all(group_successes):
++                success_counts["all_successful"] += 1
++            elif any(group_successes):
++                success_counts["mixed"] += 1
++            else:
++                success_counts["all_unsuccessful"] += 1
++        metrics.update(_composition_metrics("grpo/success_group", success_counts))
++
++    return metrics
++
++
++def compute_grpo_group_reward_metrics_from_batch(batch: Any) -> dict[str, float | int]:
++    """Read the exact aligned arrays consumed by GRPO at its trainer boundary."""
++    sequence_rewards = (
++        batch.batch["token_level_rewards"].sum(dim=-1).detach().cpu().tolist()
++    )
++    sample_uids = _per_sample_list(batch.non_tensor_batch["uid"], "uid")
++
++    successes = None
++    if ROLLOUT_EPISODE_SUCCESS_FIELD in batch.non_tensor_batch:
++        successes = _per_sample_list(
++            batch.non_tensor_batch[ROLLOUT_EPISODE_SUCCESS_FIELD],
++            ROLLOUT_EPISODE_SUCCESS_FIELD,
++        )
++
++    return compute_grpo_group_reward_metrics(
++        sample_uids=sample_uids,
++        sequence_rewards=sequence_rewards,
++        successes=successes,
++    )

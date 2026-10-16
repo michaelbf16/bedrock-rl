@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = (ROOT / "Dockerfile").read_text()
 SETUP = (ROOT / "bin" / "setup_deps.sh").read_text()
 CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+DOCTOR = (ROOT / "bedrock_rl" / "cli" / "doctor.py").read_text()
 
 
 def _value(source: str, pattern: str) -> str:
@@ -44,6 +45,26 @@ class DockerfileContractTests(unittest.TestCase):
         self.assertIn('git -C /opt/verl apply --reverse --check "$d"',
                       DOCKERFILE)
 
+    def test_verl_patch_stack_has_four_independently_owned_diffs(self):
+        self.assertEqual(
+            [path.name for path in sorted((ROOT / "patches" / "verl").glob(
+                "*.diff"))],
+            [
+                "0001-rollout-clone-lora-weights-6688.diff",
+                "0002-fsdp-sync-merged-lora-7014.diff",
+                "0003-qwen-vl-ragged-position-ids.diff",
+                "0004-grpo-group-reward-composition.diff",
+            ],
+        )
+
+    def test_patch_ownership_comments_count_all_three_new_0004_files(self):
+        for source in (DOCKERFILE, SETUP, DOCTOR):
+            with self.subTest(source=source[:20]):
+                self.assertIn(
+                    "0004 owns ray_trainer.py plus three new files:", source)
+                self.assertIn("reward_group_metrics.py", source)
+                self.assertIn("two reward-group test modules", source)
+
     def test_native_setup_discovers_the_same_engine_patch_glob(self):
         self.assertIn(
             'for NETHERITE_PATCH in "$ROOT"/patches/netherite/*.diff',
@@ -57,6 +78,18 @@ class DockerfileContractTests(unittest.TestCase):
         self.assertIn('"$GITHUB_WORKSPACE"/patches/verl/*.diff', CI)
         self.assertNotIn("for d in patches/netherite/*.diff", CI)
         self.assertNotIn("for d in patches/verl/*.diff", CI)
+
+    def test_ci_executes_both_grpo_metric_suites_against_pinned_verl(self):
+        self.assertIn(
+            '"$VERL_HOME/tests/trainer/ppo/test_reward_group_metrics.py"',
+            CI,
+        )
+        self.assertIn(
+            '"$VERL_HOME/tests/trainer/ppo/'
+            'test_ray_trainer_reward_group_metrics.py"',
+            CI,
+        )
+        self.assertIn("torchdata==0.11.0", CI)
 
     def test_runtime_identifies_itself_as_a_container_image(self):
         self.assertIn("BRL_CONTAINER_IMAGE=1", DOCKERFILE)
