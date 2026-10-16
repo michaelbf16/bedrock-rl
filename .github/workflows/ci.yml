@@ -51,8 +51,15 @@ jobs:
       - name: unit tests
         run: uv run --extra netherite python -m unittest discover -s tests
 
-      - name: Matplotlib evaluation charts
-        run: uv run --extra plot python -m unittest tests.test_evaluation
+      # The onboarding contract checks the documented `uv sync --extra plot`
+      # text statically in the base unit-test step. This step actually installs
+      # that extra and executes the documented arguments through the public
+      # `bedrock` console script.
+      - name: Matplotlib charts and public summary workflow
+        run: |
+          uv run --extra plot python -m unittest \
+            tests.test_evaluation \
+            tests.test_onboarding_contract.OnboardingContractTests.test_documented_eval_summary_runs_through_public_entrypoint
 
       # Torch is optional at runtime, but trainer math is not optional in
       # CI. Install the pinned CPU wheel after the lightweight-import check

@@ -23,6 +23,30 @@ locally from a Minecraft client jar you own:
 
 ## Quick start
 
+On Ubuntu or Debian, install the command-line and native engine build
+prerequisites first. This is the same engine dependency set used by CI:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  build-essential curl git libsdl2-dev pkg-config unzip xxd
+```
+
+This project uses [uv](https://docs.astral.sh/uv/). If `uv --version` is
+missing or fails, install the CI-pinned uv `0.12.3` with Astral's official
+standalone installer. The PATH change is scoped to that recovery path, so an
+already-working uv is left in place:
+
+```bash
+if ! uv --version >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/0.12.3/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+uv --version
+```
+
+Then clone and set up the runtime:
+
 ```bash
 git clone https://github.com/michaelbf16/bedrock-rl bedrock-rl
 cd bedrock-rl

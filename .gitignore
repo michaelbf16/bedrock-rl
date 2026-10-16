@@ -1,0 +1,6 @@
+# Python source execution
+__pycache__/
+*.py[cod]
+
+# Runtime-generated task snapshot caches
+**/.bedrock/snapshots/

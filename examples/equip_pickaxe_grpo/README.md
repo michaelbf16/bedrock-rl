@@ -77,3 +77,17 @@ After selecting a checkpoint, generate `data.yaml test` once and compare only
 the base and selected policy on those fresh paired trials. Keep every raw
 record and use `bedrock eval summarize` for paired deltas and seed-clustered
 confidence intervals; do not select a checkpoint on the test split.
+
+The summarizer writes an SVG curve, so install its plotting extra in the same
+environment immediately before running it:
+
+```bash
+uv sync --extra plot
+uv run bedrock eval summarize \
+  --point Base 0 examples/equip_pickaxe_grpo/curves/dev_base.records.json \
+  --point GRPO-5 5 examples/equip_pickaxe_grpo/curves/dev_step5.records.json \
+  --point GRPO-10 10 examples/equip_pickaxe_grpo/curves/dev_step10.records.json \
+  --base Base \
+  --summary /tmp/equip-pickaxe-dev-summary.json \
+  --svg /tmp/equip-pickaxe-dev-curve.svg
+```

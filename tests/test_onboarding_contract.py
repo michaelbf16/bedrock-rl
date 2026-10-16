@@ -1,7 +1,13 @@
+import importlib.util
 import re
-from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
 import tomllib
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from bedrock_rl.cli import main as cli
@@ -10,6 +16,7 @@ from bedrock_rl.cli import main as cli
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = (ROOT / "bin" / "setup_deps.sh").read_text()
 README = (ROOT / "README.md").read_text()
+CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
 
 class OnboardingContractTests(unittest.TestCase):
@@ -80,6 +87,159 @@ class OnboardingContractTests(unittest.TestCase):
         self.assertNotIn("CPU Docker target covers generation and evaluation",
                          README)
         self.assertIn("remote-API\n`bedrock trial`", README)
+
+    def test_quick_start_installs_native_prerequisites_and_checks_pinned_uv(
+            self):
+        quick_start = README.split("## Quick start", 1)[1].split(
+            "\n## ", 1)[0]
+        ci_uv = re.search(r'UV_VERSION: "([^"]+)"', CI)
+        self.assertIsNotNone(ci_uv)
+        installer = (
+            f"https://astral.sh/uv/{ci_uv.group(1)}/install.sh"
+        )
+        self.assertIn(installer, quick_start)
+        self.assertNotIn("https://astral.sh/uv/install.sh", quick_start)
+        self.assertIn(
+            "if ! uv --version >/dev/null 2>&1; then", quick_start)
+        self.assertNotIn("command -v uv", quick_start)
+        recovery = quick_start.split(
+            "if ! uv --version >/dev/null 2>&1; then", 1)[1].split(
+                "\nfi", 1)[0]
+        self.assertIn(installer, recovery)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', recovery)
+        after_recovery = quick_start.split("\nfi", 1)[1]
+        self.assertIn("\nuv --version", after_recovery)
+        self.assertLess(
+            quick_start.index("\nuv --version", quick_start.index("\nfi")),
+            quick_start.index("uv sync --extra netherite --extra data"),
+        )
+        for package in (
+                "build-essential", "libsdl2-dev", "pkg-config", "xxd",
+                "unzip"):
+            with self.subTest(package=package):
+                self.assertIn(package, quick_start)
+                self.assertIn(package, CI)
+
+    def test_every_documented_eval_summary_installs_plot_extra_beside_it(self):
+        paths = [ROOT / "README.md", *(ROOT / "docs").glob("*.md")]
+        paths.extend((ROOT / "examples").glob("*/README.md"))
+        workflows = []
+        for path in paths:
+            for block in re.findall(
+                    r"```bash\n(.*?)\n```", path.read_text(), re.DOTALL):
+                if "bedrock eval summarize" not in block:
+                    continue
+                workflows.append(path.relative_to(ROOT))
+                self.assertIn("uv sync --extra plot", block)
+                self.assertLess(
+                    block.index("uv sync --extra plot"),
+                    block.index("bedrock eval summarize"),
+                )
+        self.assertEqual(
+            workflows,
+            [Path("examples/equip_pickaxe_grpo/README.md")],
+        )
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("matplotlib"),
+        "the executable SVG contract runs in CI's plot-extra step",
+    )
+    def test_documented_eval_summary_runs_through_public_entrypoint(self):
+        path = ROOT / "examples" / "equip_pickaxe_grpo" / "README.md"
+        block = next(
+            block for block in re.findall(
+                r"```bash\n(.*?)\n```", path.read_text(), re.DOTALL)
+            if "bedrock eval summarize" in block
+        )
+        documented = block[block.index("uv run bedrock"):]
+        argv = shlex.split(documented.replace("\\\n", " "))
+        self.assertEqual(argv[:3], ["uv", "run", "bedrock"])
+        entrypoint = Path(sys.executable).with_name("bedrock")
+        self.assertTrue(entrypoint.is_file(), entrypoint)
+        outputs = (
+            Path("/tmp/equip-pickaxe-dev-summary.json"),
+            Path("/tmp/equip-pickaxe-dev-curve.svg"),
+        )
+        for output in outputs:
+            output.unlink(missing_ok=True)
+        try:
+            result = subprocess.run(
+                [str(entrypoint), *argv[3:]],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for output in outputs:
+                self.assertTrue(output.is_file(), output)
+        finally:
+            for output in outputs:
+                output.unlink(missing_ok=True)
+
+    def test_generated_caches_leave_clean_repo_but_evidence_is_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(
+                ["git", "init", "-q", str(checkout)],
+                check=True,
+            )
+            shutil.copyfile(ROOT / ".gitignore", checkout / ".gitignore")
+            (checkout / "tracked.txt").write_text("baseline\n")
+            subprocess.run(
+                ["git", "-C", str(checkout), "add", "."],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(checkout),
+                    "-c", "user.name=Bedrock Contract",
+                    "-c", "user.email=contract@example.invalid",
+                    "commit", "-qm", "clean baseline",
+                ],
+                check=True,
+            )
+
+            status = ["git", "-C", str(checkout), "status", "--porcelain",
+                      "--untracked-files=all"]
+            baseline = subprocess.run(
+                status, check=True, capture_output=True, text=True,
+            ).stdout
+            self.assertEqual(baseline, "")
+            generated = (
+                Path("bedrock_rl/env/__pycache__/task.cpython-312.pyc"),
+                Path("bedrock_rl/legacy.pyc"),
+                Path("examples/demo/.bedrock/snapshots/demo/cache.bsnp"),
+            )
+            for relative in generated:
+                path = checkout / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"generated")
+                ignored = subprocess.run(
+                    ["git", "-C", str(checkout), "check-ignore", "--quiet",
+                     str(relative)],
+                    check=False,
+                )
+                self.assertEqual(ignored.returncode, 0, relative)
+            after = subprocess.run(
+                status, check=True, capture_output=True, text=True,
+            ).stdout
+            self.assertEqual(after, "")
+
+            evidence = Path("examples/demo/.bedrock/evidence.json")
+            evidence_path = checkout / evidence
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            evidence_path.write_text("{}\n")
+            ignored = subprocess.run(
+                ["git", "-C", str(checkout), "check-ignore", "--quiet",
+                 str(evidence)],
+                check=False,
+            )
+            self.assertEqual(ignored.returncode, 1)
+            visible = subprocess.run(
+                status, check=True, capture_output=True, text=True,
+            ).stdout
+            self.assertEqual(visible, f"?? {evidence}\n")
 
     def test_equip_slot_balance_names_worlds_and_rows(self):
         text = (ROOT / "examples" / "equip_pickaxe_grpo" /
