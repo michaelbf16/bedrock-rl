@@ -622,6 +622,8 @@ def cmd_eval_trials(a, rest):
 
 def cmd_eval_summarize(a):
     argv = []
+    if getattr(a, "allow_legacy_protocol", False):
+        argv.append("--allow-legacy-protocol")
     for label, step, records in a.point:
         argv += ["--point", label, step, records]
     if a.base:
@@ -1176,6 +1178,9 @@ def build_parser():
         help="curve point; repeat for the base and each checkpoint")
     q.add_argument("--base", default=None,
                    help="baseline label; defaults to the first point")
+    q.add_argument("--allow-legacy-protocol", action="store_true",
+                   help="explicitly compare historical records with "
+                        "unverified content provenance")
     q.add_argument("--summary", required=True,
                    help="output summary JSON")
     q.add_argument("--svg", required=True, help="output SVG curve")

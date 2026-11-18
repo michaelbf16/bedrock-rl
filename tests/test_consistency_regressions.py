@@ -246,7 +246,8 @@ class ConsistencyRegressionTests(unittest.TestCase):
                 return processor
 
         with patch.dict(sys.modules, {
-                "transformers": SimpleNamespace(AutoProcessor=AutoProcessor)}):
+                "transformers": SimpleNamespace(AutoProcessor=AutoProcessor)}), \
+                patch("bedrock_rl.security.guard_transformers_saves"):
             loaded = models.load_processor(
                 models.resolve("qwen2-vl"),
                 "Qwen/Qwen2-VL-2B-Instruct")

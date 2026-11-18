@@ -843,17 +843,19 @@ def train_plan(cfg, sets=(), resolve=str, origin="the config"):
                  env.get("AGENT_WORKERS"))
     if all(value is not None for value in partition):
         try:
-            train_bs, rollout_n, workers = map(int, partition)
+            train_bs, rollout_n = map(int, partition[:2])
+            # The shell resolves auto after discovering the worker capacity.
+            workers = None if partition[2] == "auto" else int(partition[2])
         except ValueError as exc:
             raise ConfigError(
-                f"{origin}: train_bs, rollout_n, and agent_workers must be "
-                "integers") from exc
-        if min(train_bs, rollout_n, workers) < 1:
+                f"{origin}: train_bs and rollout_n must be integers; "
+                "agent_workers must be an integer or auto") from exc
+        if min(train_bs, rollout_n) < 1 or (workers is not None and workers < 1):
             raise ConfigError(
                 f"{origin}: train_bs, rollout_n, and agent_workers must be "
                 "positive")
         rollouts = train_bs * rollout_n
-        if rollouts % workers:
+        if workers is not None and rollouts % workers:
             raise ConfigError(
                 f"{origin}: agent_workers ({workers}) must divide "
                 f"train_bs * rollout_n ({train_bs} * {rollout_n} = "

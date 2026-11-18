@@ -82,7 +82,9 @@ class NetheriteEnvironment:
         self.use_task_prompt = bool(use_task_prompt)
 
     def _open_blocking(self, task_yaml):
-        task = NetheriteTask.load(task_yaml)
+        definition = ((self.episode_spec or {}).get("task_definition"))
+        task = (NetheriteTask.from_definition(definition)
+                if definition is not None else NetheriteTask.load(task_yaml))
         parser = cu_parser(task)
         options = {"netherite_home": self.netherite_home,
                    "frames_root": self.frames_root, "raster": self.raster,

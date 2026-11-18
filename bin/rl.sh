@@ -706,5 +706,6 @@ brl_run python -m verl.trainer.main_ppo \
 # path, and no other trainer, can load.
 if brl_lora_on && [ "${EXPORT_ADAPTER:-1}" != 0 ]; then
     brl_run python -m bedrock_rl.train.export_adapter \
-        --checkpoints "$OUT" --base "$MODEL" 2>&1 | tee -a "$BRL_LOG"
+        --checkpoints "$OUT" --base "$BRL_MODEL_ID" \
+        --revision "$BRL_MODEL_REVISION" 2>&1 | tee -a "$BRL_LOG"
 fi

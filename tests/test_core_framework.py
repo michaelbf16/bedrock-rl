@@ -169,6 +169,39 @@ class FakeModel:
 
 
 class HarnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tools_can_share_one_turn_budget_after_an_informational_call(self):
+        environment = FakeEnvironment()
+        charged = []
+
+        def stateful(arguments, context):
+            del arguments
+            counted = context.metadata["count_turn"]
+            charged.append(counted)
+            environment.session.value += int(counted)
+            return ToolResult("ok")
+
+        first = FunctionTool("first", "first action", {"type": "object"},
+                             stateful)
+        second = FunctionTool("second", "second action", {"type": "object"},
+                              stateful)
+        first.turn_group = second.turn_group = "shared_session"
+        lookup = FunctionTool("lookup", "read information", {"type": "object"},
+                              lambda *_: "information")
+        lookup.turn_group = None
+
+        class Model:
+            def complete(self, *_args):
+                return {"role": "assistant", "content": None,
+                        "tool_calls": [ToolCall(str(index), name, {}).to_openai()
+                                       for index, name in enumerate(
+                                           ("lookup", "first", "second", "first"))]}
+
+        task = TaskSpec("shared", "act", ComponentSpec("unused:x"))
+        await ToolHarness(Model(), environment=environment,
+                          tools=[lookup, first, second], max_turns=1).run(task)
+        self.assertEqual(charged, [True, False, False])
+        self.assertEqual(environment.session.value, 1)
+
     async def test_openai_trajectory_views_state_tools_and_reward(self):
         environment = FakeEnvironment()
 

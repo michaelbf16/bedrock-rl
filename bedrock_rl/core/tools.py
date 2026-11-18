@@ -187,6 +187,18 @@ class ToolRegistry:
         return (None if self._malformed_fallback is None else
                 self._malformed_fallback[0])
 
+    def turn_group(self, name: str) -> str | None:
+        """The budget charged by this tool's first call in an assistant turn.
+
+        Tools own independent budgets by default. Tools that mutate the same
+        session budget may declare the same ``turn_group`` string; a purely
+        informational tool may set it to ``None``. Unknown calls use the
+        malformed fallback's group when that fallback handles them.
+        """
+        tool = self._tools[name]
+        group = getattr(tool, "turn_group", name)
+        return None if group is None else str(group)
+
     @staticmethod
     def _result(name: str, value: Any) -> ToolResult:
         if isinstance(value, ToolResult):

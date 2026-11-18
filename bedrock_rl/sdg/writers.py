@@ -19,12 +19,14 @@ from bedrock_rl.data import write_rows
 class ParquetWriter:
     """Write records to Hugging Face-compatible parquet incrementally."""
 
-    def __init__(self, output, batch_size=32, **_):
+    def __init__(self, output, batch_size=32, features=None, **_):
         self.output = str(output)
         self.batch_size = int(batch_size)
+        self.features = features
 
     def write(self, records):
-        write_rows(records, self.output, batch_size=self.batch_size)
+        write_rows(records, self.output, batch_size=self.batch_size,
+                   features=self.features)
         return self.output
 
 

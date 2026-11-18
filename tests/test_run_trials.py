@@ -59,9 +59,11 @@ class RunTrialsOutputTests(unittest.TestCase):
             "\nTASK: mine")
 
     def test_explicit_task_must_match_frozen_rows(self):
+        from bedrock_rl.env.task import Task
         task = ROOT / "examples" / "equip_pickaxe_grpo" / "task.yaml"
         other = ROOT / "examples" / "farm_one_log_sdg" / "task.yaml"
-        rows = [{"extra_info": {"task_yaml": str(task)}}]
+        rows = [{"extra_info": {"task_yaml": str(task),
+                 "task_digest": Task.load(task).definition()["sha256"]}}]
         self.assertEqual(
             Path(RUN_TRIALS.evaluation_task(rows, str(task)).path), task)
         with self.assertRaisesRegex(SystemExit, "refusing to score"):

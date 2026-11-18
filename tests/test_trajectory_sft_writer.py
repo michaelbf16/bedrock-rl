@@ -93,11 +93,10 @@ class TrajectorySFTWriterTests(unittest.TestCase):
 
         view, images = prepare_sft_multiturn(messages, [FIRST, SECOND])
 
-        self.assertEqual(images, [FIRST, SECOND])
+        self.assertEqual(images, [FIRST])
         self.assertEqual(view[0]["content"], [
             text_part(SFT_IMAGE_TAG), text_part("\nTASK: farm one log")])
-        self.assertEqual(view[2]["content"], [
-            text_part(SFT_IMAGE_TAG), text_part("\nnext observation")])
+        self.assertEqual(view[-1]["role"], "assistant")
 
     def test_sft_marker_conversion_preserves_online_prompt_bytes(self):
         online = "<image>\nTASK: farm one log"

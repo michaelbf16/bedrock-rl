@@ -1606,6 +1606,35 @@ class GenerationTests(unittest.TestCase):
             GenerationSpec.from_dict(
                 {**common, "worlds": 2, "max_attempts": 3})
 
+    def test_output_and_rejection_aliases_are_rejected_before_writing(self):
+        from dataclasses import replace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real = root / "results"
+            real.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            output = real / "rows.jsonl"
+            output.write_text("previous-complete-dataset")
+            document = {
+                "count": 1,
+                "generator": f"{__name__}:_PassGenerator",
+                "executor": "bedrock_rl.sdg:SerialExecutor",
+                "output": str(output),
+            }
+            for path in (real / "../results/rows.jsonl", alias / "rows.jsonl"):
+                with self.subTest(path=path), self.assertRaisesRegex(
+                        ValueError, "rejections_output must differ"):
+                    GenerationSpec.from_dict(
+                        {**document, "rejections_output": str(path)})
+                self.assertEqual(output.read_text(), "previous-complete-dataset")
+            spec = GenerationSpec.from_dict(document)
+            spec = replace(spec, rejections_output=str(alias / "rows.jsonl"))
+            with self.assertRaisesRegex(ValueError, "must differ"):
+                spec.execute()
+            self.assertEqual(output.read_text(), "previous-complete-dataset")
+
     def test_case_rejection_codes_are_aggregated_separately_from_details(self):
         from bedrock_rl.sdg.generation import CaseRejected, _call
 

@@ -112,7 +112,7 @@ class PackageArchitectureTests(unittest.TestCase):
     def test_package_root_contains_only_public_facades(self):
         modules = {path.name for path in PACKAGE.glob("*.py")}
         self.assertEqual(modules, {
-            "__init__.py", "data.py", "lora.py", "models.py",
+            "__init__.py", "data.py", "lora.py", "models.py", "security.py",
             "reporting.py", "resources.py",
         })
 

@@ -77,3 +77,19 @@ After selecting a checkpoint, generate `data.yaml test` once and compare only
 the base and selected policy on those fresh paired trials. Keep every raw
 record and use `bedrock eval summarize` for paired deltas and seed-clustered
 confidence intervals; do not select a checkpoint on the test split.
+
+The committed smoke-run records predate content fingerprints. They remain
+historical evidence, with an explicit opt-in to regenerate their descriptive
+comparison under the current summary tool:
+
+```bash
+uv run bedrock eval summarize --allow-legacy-protocol \
+  --point base 0 examples/equip_pickaxe_grpo/curves/dev_base.records.json \
+  --point step10 10 examples/equip_pickaxe_grpo/curves/dev_step10.records.json \
+  --summary /tmp/bedrock-historical-summary.json \
+  --svg /tmp/bedrock-historical-curve.svg
+```
+
+The output marks those contracts as unverified; it does not retrofit task,
+prompt, engine, or snapshot identities into the committed records. Newly
+generated rows and evaluations use content fingerprints by default.

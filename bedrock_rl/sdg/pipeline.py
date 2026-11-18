@@ -37,7 +37,7 @@ from bedrock_rl.sdg.policy.spatial import PlanRejected
 from bedrock_rl.sdg.policy.world import (
     SnapshotBoundsError, SnapshotWorldMap,
 )
-from bedrock_rl.env.task import Task, relative_path
+from bedrock_rl.env.task import Task, relative_path, task_document_digest
 
 DATA_SOURCE = "bedrock"
 INTERFACE = "cu"
@@ -100,9 +100,15 @@ def load_episode_specs(path):
     import pandas as pd
 
     frame = pd.read_parquet(path, columns=["extra_info"])
-    return [episode_spec(info["task_yaml"], info["seed"],
-                         info["init_yaw"], info["init_pitch"])
-            for info in frame["extra_info"]]
+    specs = []
+    for info in frame["extra_info"]:
+        spec = episode_spec(info["task_yaml"], info["seed"],
+                            info["init_yaw"], info["init_pitch"])
+        for key in ("task_definition", "task_digest"):
+            if key in info:
+                spec[key] = copy.deepcopy(info[key])
+        specs.append(spec)
+    return specs
 
 
 def _path(value, base_dir):
@@ -145,6 +151,13 @@ class EpisodeDatasetGenerator:
             frames_root=self.frames_root)
         try:
             prompt = cu_user_prompt(self.task, episode.env)
+            definition = self.task.definition()
+            # Keep exact absent keys when parquet datasets for different
+            # tasks are combined; Arrow struct unions add null-valued keys.
+            episode.spec["task_definition"] = json.dumps(
+                definition, sort_keys=True, allow_nan=False,
+                separators=(",", ":"))
+            episode.spec["task_digest"] = definition["sha256"]
             spec = dict(episode.spec,
                         task_yaml=relative_path(episode.spec["task_yaml"]),
                         interface=INTERFACE)
@@ -513,9 +526,7 @@ class ScriptedEpisodeGenerator:
         document = self._task_document(case)
         if document is None:
             return self.task, "unavailable"
-        body = json.dumps(document, sort_keys=True, allow_nan=False,
-                          separators=(",", ":"))
-        digest = hashlib.sha256(body.encode()).hexdigest()
+        digest = task_document_digest(document)
         cached = getattr(self, "_resolved_task", None)
         if cached is not None and cached[0] == digest:
             return cached[1], digest
@@ -641,6 +652,8 @@ class ScriptedEpisodeGenerator:
         try:
             if isinstance(getattr(episode, "spec", None), dict):
                 episode.spec["task_digest"] = task_digest
+                if isinstance(task, Task):
+                    episode.spec["task_definition"] = task.definition()
             policy = self.policy.create()
             reset = getattr(policy, "reset", None)
             preflight_started_at = time.perf_counter()

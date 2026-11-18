@@ -37,7 +37,7 @@ NETHERITE_SHA="$(cat "$ROOT/patches/netherite/PINNED_SHA")"
 #
 # The upstream two are cherry-picked rather than taken by moving the
 # checkout, because there is no revision that has both and still works
-# here. verl main requires vLLM 0.18.0+ and this stack is on 0.12.0, and
+# here. verl main requires vLLM 0.18.0+ and this stack is on 0.17.1, and
 # every commit between the two PRs and that floor imports
 # `transfer_queue`, which is not on PyPI. The window is empty. Both diffs
 # are small, isolated changes and apply clean.
@@ -443,7 +443,7 @@ fi
 if [ ! -x "$VERL_ENV/bin/python" ]; then
     uv venv --python "$VERL_PYTHON" "$VERL_ENV"
 fi
-# known-good combo for verl 0.8 on H100/cu128 (see README). verl installs
+# known-good combo for verl 0.8 on H100/cu130 (see README). verl installs
 # --no-deps, so its runtime deps are pinned explicitly here: torchdata
 # carries StatefulDataLoader, qwen-vl-utils carries the VL path,
 # transformers must stay pinned or the resolver moves it, and datasets
@@ -456,39 +456,15 @@ fi
 # should get. verl's W&B and TensorBoard adapters import their client packages
 # only when selected, but installing them here keeps a typed train.yaml from
 # failing after GPUs have already been allocated.
-# nvidia-cutlass-dsl is NOT a dependency this repo uses. It is pinned
-# because vLLM 0.12 probes for a FlashAttention 4 kernel like this
-# (vllm/vllm_flash_attn/flash_attn_interface.py):
-#
-#     try:
-#         from flash_attn.cute.interface import _flash_attn_fwd
-#         FA4_AVAILABLE = True
-#     except ImportError:
-#         FA4_AVAILABLE = False
-#
-# The guard catches ImportError and nothing else. flash-attn 2.8.3's
-# `cute` layer is written against the cutlass DSL, and up to 4.5 a
-# mismatch surfaces as ModuleNotFoundError, which IS an ImportError, so
-# the probe fails quietly and the optional kernel is simply off. From
-# 4.7 the DSL no longer carries `cutlass.cute.core.ThrMma`, so the same
-# mismatch surfaces as an AttributeError, which the guard does not
-# catch, and it escapes all the way out.
-#
-# What it takes down is not an optional kernel. verl imports its MoE
-# weight-loader patch at module scope in
-# workers/rollout/vllm_rollout/utils.py, that pulls in vllm's
-# deepseek_v2 -> rotary_embedding -> vllm_flash_attn chain, so
-# `import verl.workers.rollout.vllm_rollout` raises. EVERY vLLM rollout
-# in the venv dies about thirty seconds in, dense models included,
-# before a byte of GPU memory is allocated. It is not MoE-specific and
-# it is not LoRA-specific; both were suspected first and both were
-# wrong.
-#
-# Measured on this stack: 4.5.3 imports clean, 4.7.0 does not.
+# Keep the cutlass DSL pinned alongside flash-attn: its optional FA4 probe
+# has changed API across releases. CUDA 13 wheels keep Torch, vLLM and
+# flash-attn on a matching ABI while closing the Torch <=2.9 loader flaw.
 uv pip install --python "$VERL_ENV/bin/python" \
-    --torch-backend cu128 \
-    --requirement "$ROOT/requirements/verl-cu128.lock"
+    --torch-backend cu130 \
+    --requirement "$ROOT/requirements/verl-cu130.lock"
 uv pip install --python "$VERL_ENV/bin/python" --no-deps -e "$VERL_HOME"
+PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    "$VERL_ENV/bin/python" -m bedrock_rl.security
 
 # verl 0.8 reaches for flash_attn.bert_padding when it unpads a batch to
 # compute log probs, and on CUDA that import has no fallback, so training

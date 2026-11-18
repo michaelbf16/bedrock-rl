@@ -117,6 +117,85 @@ def _fake_modules(observed, batches):
 
 
 class StreamingParquetTests(unittest.TestCase):
+    def test_unknown_fields_are_rejected_without_replacing_existing_data(self):
+        try:
+            import datasets  # noqa: F401
+            import pyarrow  # noqa: F401
+        except ImportError:
+            self.skipTest("datasets and pyarrow are optional")
+        for late in (
+                {"id": 3, "late": "required", "events": [{"seed": 3}]},
+                {"id": 3, "events": [{"seed": 3, "detail": "required"}]}):
+            for batch_size in (2, 4):
+                with self.subTest(late=late, batch_size=batch_size), \
+                        tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "rows.parquet"
+                    original = b"previous-complete-dataset"
+                    output.write_bytes(original)
+                    rows = [{"id": i, "events": [{"seed": i}]}
+                            for i in range(3)] + [late]
+                    # The unknown top-level field may be lost even within
+                    # Dataset.from_list's initial batch. Nested fields are
+                    # inferred across that batch, so exercise their late case.
+                    if "late" not in late and batch_size == 4:
+                        continue
+                    with self.assertRaisesRegex(ValueError, "parquet schema"):
+                        write_rows(rows, output, batch_size=batch_size)
+                    self.assertEqual(output.read_bytes(), original)
+                    self.assertEqual(
+                        list(Path(directory).glob(".rows.parquet.*.tmp")), [])
+
+    def test_null_only_inference_rejects_later_values_with_field_context(self):
+        try:
+            import datasets  # noqa: F401
+            import pyarrow  # noqa: F401
+        except ImportError:
+            self.skipTest("datasets and pyarrow are optional")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(
+                    ValueError, r"row 3.meta.label.*inferred as null"):
+                write_rows([
+                    {"meta": {"label": None}},
+                    {"meta": {"label": None}},
+                    {"meta": {"label": "usable"}},
+                ], Path(directory) / "rows.parquet", batch_size=2)
+
+    def test_image_encoder_cannot_silently_drop_additional_metadata(self):
+        try:
+            import datasets  # noqa: F401
+            import pyarrow  # noqa: F401
+        except ImportError:
+            self.skipTest("datasets and pyarrow are optional")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, r"images\[0\].*caption"):
+                write_rows([
+                    {"images": [{"bytes": b"png", "path": None}]},
+                    {"images": [{"bytes": b"png", "path": None,
+                                 "caption": "must not be discarded"}]},
+                ], Path(directory) / "rows.parquet", batch_size=1)
+
+    def test_declared_nullable_features_preserve_late_optional_values(self):
+        try:
+            import datasets
+            import pyarrow.parquet as pq
+        except ImportError:
+            self.skipTest("datasets and pyarrow are optional")
+        from bedrock_rl.sdg.writers import ParquetWriter
+        features = datasets.Features({
+            "id": datasets.Value("int64"),
+            "meta": {"label": datasets.Value("string")},
+            "late": datasets.Value("string"),
+        })
+        rows = [{"id": 0, "meta": {"label": None}},
+                {"id": 1, "meta": {"label": "usable"}, "late": "kept"}]
+        with tempfile.TemporaryDirectory() as directory:
+            for schema in (features, features.to_dict()):
+                output = Path(directory) / "rows.parquet"
+                ParquetWriter(output, batch_size=1, features=schema).write(rows)
+                saved = pq.read_table(output).to_pylist()
+                self.assertIsNone(saved[0]["late"])
+                self.assertEqual(saved[1], rows[1])
+
     def test_iterable_is_written_in_bounded_batches(self):
         observed, batches, consumed = [], [], []
 

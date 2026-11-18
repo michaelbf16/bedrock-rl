@@ -1554,6 +1554,7 @@ class GenerationSpec:
         output = Path(str(raw["output"]))
         if not output.is_absolute():
             output = base / output
+        output = output.resolve()
         rejections_output = raw.get("rejections_output")
         if rejections_output is not None:
             if not str(rejections_output).strip():
@@ -1562,6 +1563,7 @@ class GenerationSpec:
             rejections_output = Path(str(rejections_output))
             if not rejections_output.is_absolute():
                 rejections_output = base / rejections_output
+            rejections_output = rejections_output.resolve()
             if rejections_output == output:
                 raise ValueError(
                     "rejections_output must differ from output")
@@ -1640,6 +1642,10 @@ class GenerationSpec:
             ("executor", self.executor), ("writer", self.writer)))
 
     def execute(self, *, progress=None):
+        if (self.rejections_output is not None
+                and Path(self.output).resolve()
+                == Path(self.rejections_output).resolve()):
+            raise ValueError("rejections_output must differ from output")
         grouped = self.worlds is not None
         requested_worlds = self.worlds if grouped else None
         attempts = ((self.max_world_attempts or requested_worlds)

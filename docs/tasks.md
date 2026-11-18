@@ -59,6 +59,13 @@ uv run bedrock smoke path/to/select-pickaxe.yaml
 - `max_turns`, `max_lines`, and tick limits: the action budget.
 - `success`, `fail`, `shaping`, and `no_commit`: the reward contract.
 
+`max_ticks` includes the initial observation, action execution, settling, and
+each subsequent observation. The final observation tick is reserved within
+that limit; actions and settling are shortened when the remaining budget is
+insufficient. `max_ticks_per_turn` limits the combined action schedule in a
+tool call, before automatic settling and observation. Reading a terminal
+episode's frame returns its last observation without spending more ticks.
+
 Checks can use live state or journaled events such as movement, selected
 items, visible blocks, mining, placement, crafting, smelting, GUI use, and
 compositions (`all`/`any`), and ordered `sequence` checks. Reward-only state

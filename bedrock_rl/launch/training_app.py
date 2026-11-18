@@ -25,6 +25,7 @@ import modal
 import modal.experimental
 
 from bedrock_rl.launch.modal import modal_gpu_dockerfile, task_turn_budget
+from bedrock_rl.launch.uploads import DATA_UPLOAD_IGNORE
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,7 +58,7 @@ if SMOKE:
     if modal.is_local():
         smoke_image = (
             modal.Image.debian_slim(python_version="3.12")
-            .uv_pip_install("torch==2.9.0", "ray[default]", "numpy")
+            .uv_pip_install("torch==2.10.0", "ray[default]", "numpy")
             .add_local_python_source("bedrock_rl")
         )
     else:
@@ -84,6 +85,7 @@ else:
         if (ROOT / "data").is_dir():
             train_image = train_image.add_local_dir(
                 ROOT / "data", remote_path=str(REMOTE_ROOT / "data"),
+                ignore=DATA_UPLOAD_IGNORE,
                 copy=True)
     else:
         train_image = modal.Image.debian_slim()

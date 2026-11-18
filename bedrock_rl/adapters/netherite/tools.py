@@ -25,6 +25,7 @@ def malformed_computer_step(episode, error, *, count_turn=True):
 
 class NetheriteComputerTool:
     name = TOOL_NAME
+    turn_group = "netherite_episode"
     schema = tool_schema()[0]
     next_message = NEXT_COMPUTER_MESSAGE
     # Unknown tool names still attempted to act in this one stateful episode.

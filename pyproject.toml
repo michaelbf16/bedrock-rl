@@ -15,6 +15,7 @@ dependencies = [
     "pillow>=10",
     "pyyaml>=6",
     "rich>=13",
+    "certifi>=2026.10.23",
 ]
 
 [project.scripts]
@@ -24,7 +25,8 @@ bedrock = "bedrock_rl.cli.main:main"
 netherite = ["numpy>=1.26"]
 data = ["datasets>=2.19", "numpy>=1.26", "pandas>=2"]
 train = [
-    "torch==2.9.0",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
     "transformers==4.57.6",
     "accelerate==1.14.0",
     "peft==0.20.0",

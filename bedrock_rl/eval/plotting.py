@@ -88,6 +88,9 @@ def heldout_svg(summary: dict, success_max: float = 1.0) -> str:
         )
         figure.subplots_adjust(left=0.105, right=0.985,
                                bottom=0.17, top=0.96)
+        if summary.get("contract_verification") != "content-fingerprinted":
+            figure.text(0.105, 0.025, "Historical content contracts: unverified",
+                        color=muted, fontsize=7)
         output = StringIO()
         figure.savefig(
             output,
@@ -288,6 +291,10 @@ def combined_svg(training: dict, heldout, title: str,
         )
         figure.subplots_adjust(left=0.11, right=0.98,
                                bottom=0.11, top=0.90)
+        if any(summary.get("contract_verification") != "content-fingerprinted"
+               for _label, summary in heldout):
+            figure.text(0.11, 0.015, "Historical content contracts: unverified",
+                        color=muted, fontsize=7)
 
         output = StringIO()
         figure.savefig(

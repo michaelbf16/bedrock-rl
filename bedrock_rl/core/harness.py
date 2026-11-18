@@ -203,6 +203,7 @@ class ToolHarness:
                     break
                 stop = False
                 observations = []
+                charged_groups = set()
                 for call_index, call in enumerate(calls):
                     if stop:
                         # An assistant may emit several calls in one message.
@@ -227,12 +228,17 @@ class ToolHarness:
                             call.id, name=call.name)[0])
                         continue
                     call_metadata = dict(metadata or {})
-                    call_metadata["count_turn"] = call_index == 0
+                    owner = (call.name if call.name in self.tools else
+                             self.tools.malformed_fallback_name)
+                    group = (self.tools.turn_group(owner)
+                             if owner is not None else None)
+                    call_metadata["count_turn"] = (
+                        group is not None and group not in charged_groups)
                     context = ToolContext(task, session, recorder.trajectory,
                                           turn, state, call_metadata)
                     reason = malformed.get(call.id)
                     if reason is not None:
-                        result, _accounted_by = await self.tools.account_malformed(
+                        result, accounted_by = await self.tools.account_malformed(
                             call, reason, context)
                         if result is None:
                             result = ToolResult(
@@ -241,7 +247,7 @@ class ToolHarness:
                     elif call.name not in self.tools:
                         reason = (f"unknown tool {call.name!r}; available: "
                                   f"{sorted(self.tools.names) or 'none'}")
-                        result, _accounted_by = (
+                        result, accounted_by = (
                             await self.tools.account_malformed(
                                 call, reason, context))
                         if result is None:
@@ -250,6 +256,11 @@ class ToolHarness:
                                 {"malformed": reason})
                     else:
                         result = await self.tools.execute(call, context)
+                        accounted_by = call.name
+                    if accounted_by is not None:
+                        charged = self.tools.turn_group(accounted_by)
+                        if charged is not None:
+                            charged_groups.add(charged)
                     recorder.record_tool_result(turn, call, result)
                     messages = result.messages(call.id, name=call.name)
                     recorder.append(messages[0])

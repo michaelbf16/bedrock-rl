@@ -54,8 +54,13 @@ Every mapping in the file is CLOSED. TASK_KEYS below is the whole of the
 top level and CHECK_KEYS is the whole of a snapshot check, so a key this
 repo does not read stops the load instead of doing nothing quietly.
 """
+import copy
 import difflib
+import hashlib
+import json
 import os
+from pathlib import Path
+from collections.abc import Mapping
 
 import yaml
 
@@ -310,6 +315,24 @@ def relative_path(path):
         return p
 
 
+def _task_document_json(document):
+    def portable(value):
+        # pandas/Arrow return nested NumPy arrays and scalars in parquet
+        # structs. Normalize those without making NumPy a task dependency.
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            return tolist()
+        raise TypeError(f"task document cannot serialize {type(value).__name__}")
+
+    return json.dumps(document, sort_keys=True, allow_nan=False,
+                      separators=(",", ":"), default=portable)
+
+
+def task_document_digest(document):
+    """Identity of an authored task, before host-specific cache defaults."""
+    return hashlib.sha256(_task_document_json(document).encode()).hexdigest()
+
+
 # ── the task keys ────────────────────────────────────────────────────────
 # Every top-level key a task file may carry, next to what reads it. Not
 # every one is read HERE: several are read off `task.raw` by the episode,
@@ -554,6 +577,7 @@ class Converge:
 class Task:
     def __init__(self, d, path=None):
         reject_unknown_keys("task", d, TASK_KEYS, where=path)
+        self._definition_document = copy.deepcopy(d)
         self.raw = dict(d)
         d = self.raw
         self.path = path
@@ -715,6 +739,49 @@ class Task:
         real = resolve_path(path)
         with open(real) as f:
             return cls(yaml.safe_load(f), path=real)
+
+    def definition(self):
+        """Record resolved bindings without freezing host cache defaults."""
+        path = (Path(self.path).expanduser().resolve() if self.path else
+                Path.cwd() / f"{self.name}.yaml")
+        document = json.loads(_task_document_json(self._definition_document))
+        return {
+            "schema": "bedrock.resolved-task.v1",
+            "document": document,
+            "sha256": task_document_digest(document),
+            "resource_base": relative_path(path.parent),
+            "filename": path.name,
+        }
+
+    @classmethod
+    def from_definition(cls, definition):
+        """Restore a saved task even if its template changed or was removed."""
+        if isinstance(definition, str):
+            definition = json.loads(definition)
+        if (not isinstance(definition, Mapping)
+                or definition.get("schema") != "bedrock.resolved-task.v1"):
+            raise ValueError("unsupported recorded task definition")
+        document = definition.get("document")
+        if not isinstance(document, Mapping):
+            raise ValueError("recorded task document must be a mapping")
+        if task_document_digest(document) != definition.get("sha256"):
+            raise ValueError("recorded task definition digest does not match")
+        document = json.loads(_task_document_json(document))
+        base = definition.get("resource_base")
+        filename = definition.get("filename")
+        if (not isinstance(base, str) or not base
+                or not isinstance(filename, str) or not filename
+                or filename in (".", "..")
+                or Path(filename).name != filename):
+            raise ValueError("recorded task needs a resource base and filename")
+        base = Path(base).expanduser()
+        if not base.is_absolute():
+            root = resources.repo_root()
+            if root is None:
+                raise ValueError(
+                    "relative recorded task resource base needs a checkout")
+            base = root / base
+        return cls(copy.deepcopy(document), path=str(base.resolve() / filename))
 
     def snapshot_for(self, seed, netherite_home=None):
         """Path of this seed's start-state snapshot (built lazily on

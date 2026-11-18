@@ -107,6 +107,18 @@ presets:
         plan = self.plan(trainer="rl", agent_workers=4)
         self.assertEqual(plan.env["AGENT_WORKERS"], "4")
 
+    def test_agent_workers_auto_with_explicit_batch(self):
+        plan = self.plan(
+            trainer="rl", train_bs=2, rollout_n=2, agent_workers="auto")
+        self.assertEqual(plan.env["AGENT_WORKERS"], "auto")
+        self.assertEqual(plan.env["TRAIN_BS"], "2")
+
+    def test_auto_workers_still_validate_the_batch(self):
+        self.assertIn("positive", self.error(
+            trainer="rl", train_bs=0, rollout_n=2, agent_workers="auto"))
+        self.assertIn("integers", self.error(
+            trainer="rl", train_bs="bad", rollout_n=2, agent_workers="auto"))
+
     def test_agent_workers_must_partition_the_rollout_batch(self):
         message = self.error(
             trainer="rl", train_bs=32, rollout_n=8, agent_workers=24)

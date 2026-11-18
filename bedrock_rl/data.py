@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+from collections.abc import Mapping
 from uuid import uuid4
 
 
@@ -95,7 +96,43 @@ def png_bytes(frame):
     return buf.getvalue()
 
 
-def write_rows(rows, out, *, batch_size=32):
+def _validate_feature_value(value, feature, path):
+    """Reject fields a fixed HF schema would otherwise silently discard."""
+    if value is None:
+        return
+    if isinstance(feature, Mapping):
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{path} must be a mapping")
+        unknown = set(value) - set(feature)
+        if unknown:
+            raise ValueError(
+                f"{path} has field(s) absent from the parquet schema: "
+                + ", ".join(sorted(map(str, unknown)))
+                + "; declare features for every optional field")
+        for name, item in value.items():
+            _validate_feature_value(item, feature[name], f"{path}.{name}")
+        return
+    storage_type = getattr(feature, "pa_type", feature)
+    if isinstance(value, Mapping) and hasattr(storage_type, "names"):
+        # Encoded features such as Image use a struct internally, but are
+        # not themselves mappings. Their encoders also drop unknown keys.
+        _validate_feature_value(value, {
+            field.name: field.type for field in storage_type}, path)
+        return
+    if isinstance(feature, (list, tuple)):
+        inner = feature[0] if len(feature) == 1 else None
+    else:
+        inner = getattr(feature, "feature", None)
+    if inner is not None:
+        for index, item in enumerate(value):
+            _validate_feature_value(item, inner, f"{path}[{index}]")
+    elif getattr(feature, "dtype", None) == "null" or str(feature) == "null":
+        raise ValueError(
+            f"{path} was inferred as null but now has a non-null value; "
+            "declare features with its nullable value type")
+
+
+def write_rows(rows, out, *, batch_size=32, features=None):
     """Rows with an `images` column -> a parquet the trainers can read.
 
     The cast is the load-bearing part and the reason this is one
@@ -110,6 +147,11 @@ def write_rows(rows, out, *, batch_size=32):
     a single row may contain dozens of PNGs. The destination is replaced only
     after every batch succeeds, preserving the generation runner's exact-count
     all-or-nothing contract.
+
+    ``features`` may be a datasets.Features object or its serialized mapping.
+    Declare optional fields there when the first batch cannot establish their
+    types. Without it the first batch defines the schema, and later schema
+    drift raises an error instead of silently losing fields.
     """
     import datasets
     import pyarrow as pa
@@ -141,14 +183,19 @@ def write_rows(rows, out, *, batch_size=32):
         except StopIteration as exc:
             raise ValueError("cannot write an empty parquet dataset") from exc
         batch = take_batch(first)
-        inferred = datasets.Dataset.from_list(batch)
-        if "images" in inferred.column_names:
-            inferred = inferred.cast_column(
-                "images", datasets.Sequence(datasets.Image()))
-        features = inferred.features
+        if features is None:
+            inferred = datasets.Dataset.from_list(batch)
+            if "images" in inferred.column_names:
+                inferred = inferred.cast_column(
+                    "images", datasets.Sequence(datasets.Image()))
+            features = inferred.features
+        elif not isinstance(features, datasets.Features):
+            features = datasets.Features.from_dict(features)
         schema = features.arrow_schema
         writer = pq.ParquetWriter(str(temporary), schema)
         while batch:
+            for index, row in enumerate(batch, count + 1):
+                _validate_feature_value(row, features, f"row {index}")
             encoded = [features.encode_example(row) for row in batch]
             writer.write_table(pa.Table.from_pylist(encoded, schema=schema))
             count += len(batch)

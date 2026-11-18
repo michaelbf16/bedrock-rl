@@ -235,7 +235,7 @@ class ModalLaunchTests(unittest.TestCase):
     def test_cuda_13_gpu_families_are_refused_by_cuda_12_image(self):
         for gpu in ("B300", "B200+"):
             with self.subTest(gpu=gpu), self.assertRaisesRegex(
-                    ModalLaunchError, "CUDA 12.8"):
+                    ModalLaunchError, "CUDA 13.0"):
                 normalize_gpu(gpu, 1)
         self.assertEqual(normalize_gpu("B200", 1), ("B200", 1))
 

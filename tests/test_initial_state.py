@@ -53,6 +53,32 @@ class InitialStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot be negative"):
             InitialStateSpec.parse({"spawn": {"hazard_clearance": -1}})
 
+    def test_general_inventory_cannot_take_slots_needed_by_random_hotbar(self):
+        general = {"item": "stone", "slot": "random_inventory"}
+        hotbar = [{"item": "stick", "slot": "random_hotbar"}
+                  for _ in range(9)]
+        first = InitialStateSpec.parse({"inventory": [general, *hotbar]})
+        last = InitialStateSpec.parse({"inventory": [*hotbar, general]})
+        for seed in (0, 7, 23, 42):
+            with self.subTest(seed=seed):
+                slots = first.inventory_slots(seed)
+                self.assertEqual(slots, last.inventory_slots(seed))
+                self.assertEqual(len(slots), 10)
+                self.assertTrue(all(slots[index][0] == 280
+                                    for index in range(9)))
+
+    def test_fixed_hotbar_reservations_still_leave_room_for_constrained_stacks(self):
+        spec = InitialStateSpec.parse({"inventory": [
+            {"item": "stone", "slot": "random_inventory"},
+            *[{"item": "stick", "slot": "random_hotbar"} for _ in range(8)],
+            {"item": "torch", "slot": 4},
+        ]})
+        self.assertEqual(len(spec.inventory_slots(7)), 10)
+        impossible = InitialStateSpec.parse({"inventory": [
+            {"item": "stick", "slot": "random_hotbar"} for _ in range(10)]})
+        with self.assertRaisesRegex(ValueError, "not enough free inventory slots"):
+            impossible.inventory_slots(7)
+
     def test_unsupported_engine_world_settings_are_refused(self):
         for key, value in (("mode", "creative"), ("difficulty", "hard"),
                            ("weather", "rain")):

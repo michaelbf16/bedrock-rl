@@ -176,7 +176,7 @@ def normalize_gpu(value: str | None, nodes: int) -> tuple[str, int]:
     if kind in _CUDA_INCOMPATIBLE_GPUS:
         raise ModalLaunchError(
             f"Modal GPU {kind} is incompatible with this image's locked "
-            f"CUDA 12.8 stack: {_CUDA_INCOMPATIBLE_GPUS[kind]}")
+            f"CUDA 13.0 stack: {_CUDA_INCOMPATIBLE_GPUS[kind]}")
     if kind not in _FULL_NODE_GPUS:
         raise ModalLaunchError(
             f"unsupported Modal GPU type {match.group('kind')!r}; choose "

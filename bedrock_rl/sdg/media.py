@@ -393,6 +393,18 @@ def _recorded_episode(trajectory):
 def _load_recorded_task(trajectory, spec):
     from bedrock_rl.env.task import Task
 
+    expected = spec.get("task_digest")
+    provenance_digest = trajectory.provenance.get("task_digest")
+    if expected is None:
+        expected = provenance_digest
+    elif provenance_digest is not None and expected != provenance_digest:
+        raise ValueError("trajectory task digests disagree")
+    definition = spec.get("task_definition")
+    if definition is not None:
+        task = Task.from_definition(definition)
+        if expected is not None and task.definition()["sha256"] != expected:
+            raise ValueError("trajectory task digest disagrees with definition")
+        return task
     candidates = [spec["task_yaml"]]
     task_path = trajectory.task.get("path")
     if task_path and task_path not in candidates:
@@ -400,9 +412,15 @@ def _load_recorded_task(trajectory, spec):
     errors = []
     for path in candidates:
         try:
-            return Task.load(path)
+            task = Task.load(path)
         except FileNotFoundError as exc:
             errors.append(str(exc))
+            continue
+        if expected is not None and task.definition()["sha256"] != expected:
+            raise ValueError(
+                "task YAML differs from the recorded task digest; this "
+                "legacy trajectory has no resolved task definition")
+        return task
     raise FileNotFoundError(
         "cannot replay trajectory because its task YAML is unavailable; "
         + " | ".join(errors))

@@ -52,7 +52,8 @@ from transformers import (Trainer, TrainerCallback,
 
 from bedrock_rl import lora, models as reg, reporting as console, resources
 from bedrock_rl.train import peft_util
-from bedrock_rl.train.sft_data import LazyEncodedDataset, validate_columns
+from bedrock_rl.train.sft_data import (CausalSFTDataset, LazyEncodedDataset,
+                                     validate_columns)
 
 DS_DIR = str(resources.template_path("deepspeed"))
 
@@ -280,9 +281,10 @@ def build_example(coder, question, answer, image):
 def build_multiturn_example(coder, messages, images,
                             last_assistant_only=False,
                             keep_latest_images=0):
-    """One whole trajectory. The hint is already gone from `messages`,
-    and the label mask covers assistant tokens only, so no privileged
-    text ever sits in a loss-carrying position.
+    """One SFT context with assistant-only loss and a causal image window.
+
+    Bounded multi-action inputs are expanded into prefixes by CausalSFTDataset
+    before reaching this encoder; each prefix supervises its final action.
 
     The Collator below reads pixel_values and image_grid_thw straight out
     of what this returns; Coder.encode_images is what refuses a family
@@ -387,7 +389,8 @@ def main():
     spec = reg.resolve(a.model)
     # --model may itself be an adapter directory, in which case the
     # weights to load are its base and the adapter is what gets continued.
-    path, named_adapter = reg.policy_paths(a.model)
+    path, named_adapter = reg.policy_paths(a.model, a.lora_adapter,
+                                           snapshot=True)
     if named_adapter and not a.lora_adapter:
         a.lora_adapter = named_adapter
     use_lora = peft_util.requested(a)
@@ -499,6 +502,8 @@ def main():
     coder = Coder(processor, chat_template=custom, spec=spec)
     validate_columns(raw.column_names)
     if "messages" in raw.column_names:
+        if a.keep_latest_images:
+            raw = CausalSFTDataset(raw)
         def encode(row):
             return build_multiturn_example(
                 coder, json.loads(row["messages"]), row["images"],

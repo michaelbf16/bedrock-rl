@@ -300,27 +300,21 @@ RUN set -ex; set -- /opt/patches/verl/*.diff; test "$#" -ge 1; \
 # four training boxes, which is why tests/test_dockerfile.py asserts the
 # whole directory is applied rather than trusting a sentence.
 #
-# nvidia-cutlass-dsl<4.7 is here for the same reason it is in
-# bin/setup_deps.sh, which has the long version: it is a dependency of
-# nothing here, but from 4.7 the DSL drops `cutlass.cute.core.ThrMma`,
-# vLLM 0.12's FlashAttention-4 probe catches only ImportError, and the
-# resulting AttributeError escapes through verl's module-scope MoE
-# weight-loader import. Every vLLM rollout in the venv then dies about
-# thirty seconds in, dense models included. Measured on this stack: 4.5.3
-# imports clean, 4.7.0 does not. It was missing here and present there,
-# which made the image and the box two different environments.
+# Keep the cutlass DSL pinned with flash-attn's optional FA4 probe.
+# Torch, vLLM and flash-attn below use matching CUDA 13 / Torch 2.10 wheels.
 RUN uv venv --python "$PYTHON_VERSION" /opt/verl-env \
  && uv pip install --python /opt/verl-env/bin/python \
-        --torch-backend cu128 \
-        --requirement /opt/bedrock-rl/requirements/verl-cu128.lock \
- && uv pip install --python /opt/verl-env/bin/python --no-deps -e /opt/verl
+        --torch-backend cu130 \
+        --requirement /opt/bedrock-rl/requirements/verl-cu130.lock \
+ && uv pip install --python /opt/verl-env/bin/python --no-deps -e /opt/verl \
+ && PYTHONPATH=/opt/bedrock-rl /opt/verl-env/bin/python -m bedrock_rl.security
 # verl reaches into flash_attn.bert_padding to compute log probs and that
 # import has no fallback on CUDA, so the trainer needs the package even
-# when the model itself runs sdpa. A prebuilt wheel matching torch 2.9 /
-# cu12 / cp312 / cxx11abi TRUE, because compiling it here costs an hour.
+# when the model itself runs sdpa. A prebuilt wheel matching torch 2.10 /
+# cu13 / cp312 / cxx11abi TRUE, because compiling it here costs an hour.
 RUN uv pip install --python /opt/verl-env/bin/python \
         "https://github.com/Dao-AILab/flash-attention/releases/download/\
-v${FLASH_ATTN_VERSION}/flash_attn-${FLASH_ATTN_VERSION}%2Bcu12torch2.9cxx11abiTRUE\
+v${FLASH_ATTN_VERSION}/flash_attn-${FLASH_ATTN_VERSION}%2Bcu13torch2.10cxx11abiTRUE\
 -cp312-cp312-linux_x86_64.whl"
 ENV PATH=/opt/verl-env/bin:$PATH \
     VERL_HOME=/opt/verl \

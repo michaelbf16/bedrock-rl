@@ -686,7 +686,7 @@ def load_model(name, device, dtype, adapter=None, trainable=False):
     from bedrock_rl import lora, reporting as console
     from bedrock_rl import models as reg
     spec = reg.resolve(name)
-    path, adapter = reg.policy_paths(name, adapter)
+    path, adapter = reg.policy_paths(name, adapter, snapshot=True)
     proc = reg.load_processor(spec, lora.processor_path(path, adapter))
     # transformers logs its flash-attention dtype warning once per
     # submodule, four times for one vision-language load, and a
@@ -732,9 +732,9 @@ def add_sampler_args(ap):
                          "that needs nothing but the training venv. vllm "
                          "is the engine the verl arms and "
                          "the evaluation driver samples with; on a "
-                         "trainable policy it needs LoRA, because that is "
-                         "the only per-step weight refresh vLLM 0.12 "
-                         f"exposes as public API. ${ENGINE_ENV} and "
+                         "trainable policy it needs LoRA, the per-step "
+                         "weight refresh implemented by this sampler. "
+                         f"${ENGINE_ENV} and "
                          f"${LAUNCHER_ENGINE_ENV} set it too")
     ap.add_argument("--vllm-gpu-frac", type=float, default=None,
                     help="fraction of the card the rollout engine may "
@@ -811,9 +811,9 @@ def check_engine(args, trainable):
                         getattr(args, "lora_adapter", None)):
         raise SystemExit(
             "--rollout-engine vllm on a trainable policy needs LoRA. "
-            "vLLM 0.12 exposes add_lora/list_loras as public API and "
-            "nothing equivalent for whole weights, so a full fine-tune "
-            "here could only sample the weights it started with. Pass "
+            "This sampler implements adapter refresh, not whole-model "
+            "synchronization, so a full fine-tune here would sample "
+            "the weights it started with. Pass "
             "--lora-rank, or leave --rollout-engine at hf.")
     return "vllm"
 
@@ -849,8 +849,7 @@ class VLLMSampler:
     WHY THE REFRESH IS THE HARD PART. verl syncs weights into its rollout
     engine every step and the sync costs about 4 s against a 1262 s step,
     so the question was never whether an on-policy vLLM rollout is
-    possible, it was which of vLLM 0.12's surfaces this trainer can reach
-    without a fork. The one used here is the whole of it:
+    possible, it was which public adapter APIs this trainer uses:
 
         engine.add_lora(LoRARequest(name, id, dir)) -> bool
         engine.list_loras()                         -> set[int]
@@ -874,11 +873,8 @@ class VLLMSampler:
     failed load would leave the engine serving the BASE model, which is
     the one wrong answer that produces no error at all.
 
-    WHY LORA ONLY on a trainable policy. Pushing whole updated weights
-    into vLLM 0.12 needs `collective_rpc` into a worker extension class
-    (its own examples/offline_inference/rlhf.py does exactly that), which
-    means a second process, a weight-update process group and a
-    model-specific name mapping. Under LoRA the adapter IS the update,
+    WHY LORA ONLY on a trainable policy. This sampler does not implement
+    whole-model weight synchronization. Under LoRA the adapter IS the update,
     the frozen base in the engine is the same frozen base the trainer
     holds, and the refresh is two public calls. A full fine-tune
     therefore stays on the HF path rather than getting a fork of verl's
@@ -892,6 +888,9 @@ class VLLMSampler:
                  lora_rank=0, max_turns=8, max_model_len=8192,
                  gpu_frac=0.45, workdir=None, say=print):
         import atexit
+        # torch/processor setup may initialize CUDA before engine creation.
+        # Forking that process cannot initialize CUDA again in vLLM workers.
+        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
         from vllm import LLM
         from bedrock_rl import lora
         from bedrock_rl import models as registry
@@ -899,7 +898,7 @@ class VLLMSampler:
         # branch.  The transformers policy loader already binds registry
         # revisions; resolving here makes the independently loaded sampler
         # consume those same bytes for the whole run.
-        self.base = str(registry.weights_path(base))
+        self.base, _ = registry.policy_paths(base, adapter, snapshot=True)
         self.coder = coder
         self.policy = policy
         self.generation = 0
@@ -921,13 +920,13 @@ class VLLMSampler:
         if policy is not None and rank <= 0:
             raise SystemExit(
                 "--rollout-engine vllm on a trainable policy needs LoRA. "
-                "vLLM 0.12 exposes add_lora/list_loras as public API and "
-                "nothing equivalent for whole weights, so a full "
-                "fine-tune here could only sample the weights it started "
-                "with. Pass --lora-rank, or leave --rollout-engine at hf.")
+                "This sampler implements adapter refresh, not whole-model "
+                "synchronization, so a full fine-tune here would sample "
+                "the weights it started with. Pass --lora-rank, or leave "
+                "--rollout-engine at hf.")
         # SDPO importance correction uses policy log-probabilities before
-        # temperature/top-k/top-p processing. Pin the vLLM 0.12 mode instead
-        # of trusting its current default to remain unchanged.
+        # temperature/top-k/top-p processing. Explicitly select raw logprobs
+        # instead of relying on the engine's default mode.
         kw = {"logprobs_mode": "raw_logprobs"}
         if rank > 0:
             kw.update({
@@ -1239,7 +1238,7 @@ def load_coder(name, adapter=None):
     from bedrock_rl import lora, reporting as console
     from bedrock_rl import models as reg
     spec = reg.resolve(name)
-    path, adapter = reg.policy_paths(name, adapter)
+    path, adapter = reg.policy_paths(name, adapter, snapshot=True)
     console.quiet_transformers_repeats()
     proc = reg.load_processor(spec, lora.processor_path(path, adapter))
     return proc, spec, path, adapter

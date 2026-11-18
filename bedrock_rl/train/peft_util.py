@@ -108,8 +108,19 @@ def attach(model, adapter, trainable):
     from peft import PeftModel
     if trainable:
         model.enable_input_require_grads()
-    return PeftModel.from_pretrained(model, str(adapter),
-                                     is_trainable=bool(trainable))
+    return portable_adapter_configs(PeftModel.from_pretrained(
+        model, str(adapter), is_trainable=bool(trainable)))
+
+
+def portable_adapter_configs(model):
+    """Keep periodic Trainer checkpoints as portable as the final adapter."""
+    from bedrock_rl.models import portable_model_identity
+    for config in model.peft_config.values():
+        if config.base_model_name_or_path:
+            config.base_model_name_or_path, config.revision = (
+                portable_model_identity(config.base_model_name_or_path,
+                                        config.revision))
+    return model
 
 
 def create(model, spec, rank, alpha, targets, exclude):
@@ -128,7 +139,7 @@ def create(model, spec, rank, alpha, targets, exclude):
     model.enable_input_require_grads()
     kwargs = lora.config_kwargs(rank, alpha, targets, exclude)
     kwargs["task_type"] = TaskType(kwargs["task_type"])
-    return get_peft_model(model, LoraConfig(**kwargs))
+    return portable_adapter_configs(get_peft_model(model, LoraConfig(**kwargs)))
 
 
 def apply(model, spec, a, trainable=True, trainable_dtype=None):
@@ -192,31 +203,42 @@ def lift_trainable(model, dtype):
     return model
 
 
-def save_adapter(model, out, base, processor=None):
+def save_adapter(model, out, base, processor=None, revision=None):
     """Write the adapter, and make it say what it was trained on.
 
     peft fills `base_model_name_or_path` from the loaded model's
-    `_name_or_path`, which is right when the base came from the hub and
-    is a local snapshot directory when it did not. Writing the path the
-    registry resolved keeps the chain from SFT into
-    `bin/rl.sh` working, because that is the field the launcher reads to
-    find the weights the adapter goes on top of.
+    `_name_or_path`, which may be a machine-local Hub cache directory.
+    Store the corresponding repository and immutable commit so moving the
+    adapter does not require copying that cache. Custom local bases remain
+    local paths and must be moved with their weights.
     """
     os.makedirs(out, exist_ok=True)
     model.save_pretrained(out)
     if processor is not None:
         processor.save_pretrained(out)
-    return set_adapter_base(out, base)
+    return set_adapter_base(out, base, revision=revision)
 
 
-def set_adapter_base(out, base):
-    """Point an adapter directory's config at the base it belongs to."""
+def set_adapter_base(out, base, revision=None):
+    """Record a portable Hub identity/commit, or a truthful local base path."""
+    from bedrock_rl.models import portable_model_identity
     path = os.path.join(str(out), lora.ADAPTER_CONFIG)
     if not os.path.isfile(path):
         return None
     with open(path) as f:
         conf = json.load(f)
-    conf["base_model_name_or_path"] = str(base)
+    # A continued adapter may pin a different commit than today's registry.
+    # Keep that pin when the caller supplied only its Hub base name. A local
+    # snapshot instead names the actual loaded bytes and takes precedence.
+    prior = conf.get("base_model_name_or_path")
+    if (revision is None and conf.get("revision") and prior
+            and not os.path.isdir(str(base))
+            and portable_model_identity(prior)[0]
+            == portable_model_identity(base)[0]):
+        revision = conf["revision"]
+    ident, commit = portable_model_identity(base, revision)
+    conf["base_model_name_or_path"] = ident
+    conf["revision"] = commit
     with open(path, "w") as f:
         json.dump(conf, f, indent=2, sort_keys=True)
     return path

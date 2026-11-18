@@ -317,7 +317,12 @@ class InitialStateSpec:
         available_all = [slot for slot in range(37)
                          if slot not in explicit]
         slots = {}
-        for stack in self.inventory:
+        # Place randomized hotbar stacks before unconstrained stacks. A
+        # general-inventory choice must not consume the last slot needed by
+        # a later hotbar entry when the main inventory still has room.
+        ordered = sorted(self.inventory,
+                         key=lambda stack: stack.slot == "random_inventory")
+        for stack in ordered:
             if isinstance(stack.slot, int):
                 slot = stack.slot
             else:

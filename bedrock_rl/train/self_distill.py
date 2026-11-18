@@ -19,8 +19,8 @@ This module does the harvest half.
      Both channels come out: the static system block, and the per-turn
      observation suffixes a `--turn-hint` rung wrote, each of which was
      recorded verbatim as it was written.
-  4. Write a parquet of multi-turn conversations that bedrock_rl/train/sft.py
-     trains on, with loss on assistant turns only.
+  4. Write one causal conversation prefix per assistant action, selecting
+     that action's observation window and applying loss only to its response.
 
 The yield is reported per hint level, because a low or empty yield is a
 measurement of task difficulty and of how much the hint is carrying, not
@@ -36,6 +36,7 @@ import json
 import math
 import os
 import random
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -45,7 +46,7 @@ from bedrock_rl.sdg import load_episode_specs
 from bedrock_rl import reporting as console
 from bedrock_rl.data import png_bytes, write_rows
 from bedrock_rl.sdg import guidance as hints
-from bedrock_rl.adapters.netherite.chat import Coder
+from bedrock_rl.adapters.netherite.chat import Coder, sft_action_prefix
 from bedrock_rl.train import peft_util
 from bedrock_rl.train.rollout import (add_sampler_args, build_sampler,
                                         check_engine, load_coder, load_model,
@@ -69,8 +70,19 @@ def harvest_rows(rollouts, hint):
         if not r.success:
             continue
         try:
-            messages, images = r.model_view()
-            msgs = hints.strip(messages, hint, r.hint_marks)
+            # The completed episode's model_view keeps terminal frames. Start
+            # from the full exact history and window each supervised action.
+            msgs = hints.strip(r.exact_messages(), hint, r.hint_marks)
+            images = [{"bytes": png_bytes(im), "path": None}
+                      for im in r.images]
+            keep_images = int(os.environ.get("BRL_KEEP_LATEST_IMAGES", "0"))
+            targets = [index for index, message in enumerate(msgs)
+                       if message.get("role") == "assistant"]
+            if not targets:
+                raise ValueError("successful rollout has no assistant action")
+            prefixes = [sft_action_prefix(
+                msgs, images, target, keep_latest_images=keep_images)
+                for target in targets]
         except ValueError as e:
             # A row whose hints cannot be removed EXACTLY must not ship,
             # and that is not in question. Dropping it rather than
@@ -79,18 +91,32 @@ def harvest_rows(rollouts, hint):
             # cannot leak: the row is gone. The count is reported.
             failed.append(f"seed {r.spec.get('seed')}: {e}")
             continue
-        rows.append({
-            "messages": json.dumps(msgs),
-            "images": [{"bytes": png_bytes(im), "path": None}
-                       for im in images],
-            "reward": float(r.reward),
-            "seed": int(r.spec["seed"]),
-            "turns": int(r.turns),
-            # whether this episode's per-episode coin came up hinted, so a
-            # p<1 harvest can still tell its two populations apart after
-            # `strip` has erased the text
-            "turn_hinted": bool(r.turn_hinted)})
+        for messages, causal_images in prefixes:
+            rows.append({
+                "messages": json.dumps(messages),
+                "images": causal_images,
+                "loss_last_assistant_only": True,
+                "reward": float(r.reward),
+                "seed": int(r.spec["seed"]),
+                "turns": int(r.turns),
+                # Keep the episode's hint population after removing its text.
+                "turn_hinted": bool(r.turn_hinted)})
     return rows, failed
+
+
+def write_receipt(path, summary):
+    """Atomically acknowledge only this invocation's completed harvest."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=parent, prefix=".harvest-receipt-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump({**summary, "out": os.path.abspath(summary["out"])},
+                      stream)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def main():
@@ -102,6 +128,9 @@ def main():
     ap.add_argument("--model", default="qwen3-vl",
                     help="registry alias, HuggingFace id, or local path")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--receipt", default=None,
+                    help="write a JSON receipt for this invocation; an empty "
+                         "harvest records examples=0 and preserves old data")
     ap.add_argument("--episodes", type=int, default=256)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--hint-level", default="procedure",
@@ -182,7 +211,7 @@ def main():
     pool = ThreadPoolExecutor(max_workers=args.workers)
     rng = random.Random(args.seed)
 
-    rows, n_seen, n_stop, batch = [], 0, 0, 0
+    rows, n_seen, n_stop, batch, n_kept = [], 0, 0, 0, 0
     n_hinted, n_dropped = 0, 0
     while n_seen < args.episodes:
         t0 = time.time()
@@ -194,6 +223,7 @@ def main():
         rolls = play(sampler, coder, picked, task, hint, args, pool)
         kept, failed = harvest_rows(rolls, hint)
         rows += kept
+        n_kept += sum(bool(r.success) for r in rolls) - len(failed)
         n_seen += k
         n_stop += sum(1 for r in rolls if r.stopped)
         n_hinted += sum(1 for r in rolls if r.turn_hinted)
@@ -204,19 +234,20 @@ def main():
                     f"could not be removed exactly ({why})")
         n_dropped += len(failed)
         batch += 1
-        ui.step(batch, {"seen": n_seen, "kept": len(rows),
+        ui.step(batch, {"seen": n_seen, "kept": n_kept,
+                        "examples": len(rows),
                         "voluntary_stop": n_stop,
                         "turn_hinted": n_hinted,
                         "strip_failed": n_dropped,
-                        "yield": len(rows) / max(n_seen, 1),
+                        "yield": n_kept / max(n_seen, 1),
                         "sec_total": round(time.time() - t0, 1)})
 
     summary = {"task": task.name, "hint_level": args.hint_level,
                "finish_hint": args.finish_hint,
                "turn_hint": args.turn_hint, "turn_hint_p": args.turn_hint_p,
                "episodes": n_seen,
-               "kept": len(rows),
-               "yield": round(len(rows) / max(n_seen, 1), 4),
+               "kept": n_kept, "examples": len(rows),
+               "yield": round(n_kept / max(n_seen, 1), 4),
                "voluntary_stop": round(n_stop / max(n_seen, 1), 4),
                "turn_hinted": round(n_hinted / max(n_seen, 1), 4),
                "strip_failed": n_dropped,
@@ -229,6 +260,8 @@ def main():
         ui.warn("empty harvest; the model never solved the task under this "
                 "hint level, so no training set was written")
     ui.record(summary)
+    if args.receipt:
+        write_receipt(args.receipt, summary)
     # An empty harvest is a measurement of the task and of what the hint
     # is carrying, not a crash, so the summary does not claim the run
     # failed. The warning above says what happened.

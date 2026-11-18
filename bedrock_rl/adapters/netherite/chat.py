@@ -99,14 +99,18 @@ def prepare_sft_multiturn(messages, images, *, last_assistant_only=False,
         raise ValueError(
             "SFT image markers do not match the separate images column")
 
-    if last_assistant_only:
-        try:
-            target = next(index for index in range(len(view) - 1, -1, -1)
-                          if view[index].get("role") == "assistant")
-        except StopIteration as exc:
-            raise ValueError("last-assistant-only SFT row has no assistant") \
-                from exc
-        view = view[:target + 1]
+    targets = [index for index, message in enumerate(view)
+               if message.get("role") == "assistant"]
+    if not targets and last_assistant_only:
+        raise ValueError("SFT row has no assistant")
+    if keep_latest_images and not last_assistant_only and len(targets) > 1:
+        raise ValueError(
+            "bounded multi-turn SFT needs one causal prefix per assistant; "
+            "use CausalSFTDataset or loss_last_assistant_only rows")
+    # Terminal observations have no target and must never displace the image
+    # an action saw. This also applies to a single-action, all-loss row.
+    if targets:
+        view = view[:targets[-1] + 1]
 
     causal_images = list(images[:_sft_marker_count(view)])
     if keep_latest_images and len(causal_images) > keep_latest_images:
@@ -131,6 +135,26 @@ def prepare_sft_multiturn(messages, images, *, last_assistant_only=False,
         view = filtered
         causal_images = causal_images[-keep_latest_images:]
     return view, causal_images
+
+
+def sft_action_prefix(messages, images, assistant_index, *,
+                      keep_latest_images=0):
+    """One action's causal context, with its own observation window.
+
+    Normalize against the complete image column before slicing: legacy marker
+    disambiguation needs that count, and a later frame must not enter a prefix.
+    """
+    view = normalize_legacy_sft_markers(messages, len(images))
+    if _sft_marker_count(view) != len(images):
+        raise ValueError(
+            "SFT image markers do not match the separate images column")
+    if not (0 <= assistant_index < len(view)) or (
+            view[assistant_index].get("role") != "assistant"):
+        raise ValueError("SFT prefix target must be an assistant message")
+    prefix = view[:assistant_index + 1]
+    return prepare_sft_multiturn(
+        prefix, images[:_sft_marker_count(prefix)],
+        last_assistant_only=True, keep_latest_images=keep_latest_images)
 
 
 def template_messages(messages):

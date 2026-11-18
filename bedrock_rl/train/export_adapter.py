@@ -62,7 +62,7 @@ def merge(actor_dir, target_dir):
     return subprocess.call(argv)
 
 
-def export(checkpoints, base, step=None):
+def export(checkpoints, base, step=None, revision=None):
     """The newest checkpoint under `checkpoints`, as an adapter directory.
 
     Returns the adapter path, or None when there is nothing to export.
@@ -91,7 +91,7 @@ def export(checkpoints, base, step=None):
             f"checkpoint holds no lora_A/lora_B tensors, so the run was a "
             f"full fine-tune however it was launched.")
     from bedrock_rl.train import peft_util
-    peft_util.set_adapter_base(adapter, base)
+    peft_util.set_adapter_base(adapter, base, revision=revision)
     print(f"adapter  {adapter}")
     print(f"base     {base}")
     print(f"evaluate it with\n"
@@ -106,10 +106,12 @@ def main():
                          "global_step_N/actor")
     ap.add_argument("--base", required=True,
                     help="the base model the adapter was trained on")
+    ap.add_argument("--revision", default=None,
+                    help="the exact Hub base revision used for training")
     ap.add_argument("--step", type=int, default=None,
                     help="a specific step; the newest one by default")
     a = ap.parse_args()
-    export(a.checkpoints, a.base, a.step)
+    export(a.checkpoints, a.base, a.step, a.revision)
 
 
 if __name__ == "__main__":

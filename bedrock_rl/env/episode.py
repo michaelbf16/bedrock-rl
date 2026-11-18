@@ -358,11 +358,13 @@ class Episode:
         self._sync_screen()
         self.t0_png = (capture_png(self.model_view, self)
                        if self.capture_frames else self._frameless_tick())
+        self._last_frame_png = self.t0_png
         self._sync_screen()
         # reset_pose and the t0 capture tick the live engine. Their events
         # describe episode setup, not model behavior, so journal-backed task
         # checks begin immediately after the first observation is complete.
         self.journal_start = len(self.env.journal)
+        self.done = self.env.ticks >= self.task.max_ticks
 
     @property
     def init_pose(self):
@@ -427,9 +429,24 @@ class Episode:
         """
         from bedrock_rl.env.task import Task
         task_yaml, seed, init_yaw, init_pitch = spec_values(spec)
-        if task is None:
+        definition = spec.get("task_definition")
+        if definition is not None:
+            recorded_task = Task.from_definition(definition)
+            expected = recorded_task.definition()["sha256"]
+            if spec.get("task_digest", expected) != expected:
+                raise ValueError("episode task digest disagrees with definition")
+            if task is not None and task.definition()["sha256"] != expected:
+                raise ValueError("supplied task differs from recorded definition")
+            task = recorded_task
+        elif task is None:
             task = Task.load(task_yaml)
+        if (definition is None and spec.get("task_digest") is not None
+                and task.definition()["sha256"] != spec["task_digest"]):
+            raise ValueError("task differs from the recorded episode digest")
         episode = cls(task, seed, init_yaw, init_pitch, parser=parser, **kw)
+        if definition is not None:
+            episode.spec["task_definition"] = task.definition()
+            episode.spec["task_digest"] = expected
         recorded_view = spec.get("view")
         if recorded_view is not None and recorded_view != episode.spec["view"]:
             episode.close()
@@ -523,6 +540,10 @@ class Episode:
 
     def step(self, program_text, *, count_turn=True):
         """Run one tool call and optionally start a new assistant turn."""
+        if self.done:
+            return (render_obs(self.env, gui_open=self.gui_open,
+                               perception=self.task.perception),
+                    self.frame(), 0.0, True)
         journal_start = getattr(self, "journal_start", 0)
         if count_turn:
             self.turns += 1
@@ -548,8 +569,11 @@ class Episode:
             return (PARSE_ERROR + str(e), frame,
                     step_r, self.done)
         self.nlines += nlines
-        budget = min(self.per_turn_ticks,
-                     self.task.max_ticks - self.env.ticks)
+        # Every observation costs one engine tick, even without rendering.
+        # Reserve it before scheduling actions/settling so the final state
+        # shown and scored can never fall beyond the episode's tick budget.
+        remaining = max(0, self.task.max_ticks - self.env.ticks - 1)
+        budget = min(self.per_turn_ticks, remaining)
         # The whole turn as ONE batch. Truncation is by tick count and
         # nothing between the ticks reads the observation, so the items
         # that execute are known before any of them do. That makes this
@@ -570,8 +594,9 @@ class Episode:
                 # execute, so a tick-budget truncation cannot leave it
                 # describing a screen the engine never opened.
                 self.gui_open = bool(act["gui_open"])
-        if self.task.settle_ticks:
-            items.append(({}, self.task.settle_ticks))
+        settle = min(self.task.settle_ticks, remaining - used)
+        if settle:
+            items.append(({}, settle))
         if items:
             # A world mining hold is a maximum duration, not permission to
             # keep attacking the next voxel after the intended one breaks.
@@ -644,10 +669,14 @@ class Episode:
     def frame(self):
         """The current frame as a PIL image, or None when rendering is off.
 
-        Costs one engine tick either way; see ``MagmaEnv.frame``.
+        Costs one engine tick while live; see ``MagmaEnv.frame``. A terminal
+        episode returns its last captured observation without advancing.
         """
+        if self.done or self.env.ticks >= self.task.max_ticks:
+            return to_image(getattr(self, "_last_frame_png", None))
         image = (capture_png(self.model_view, self)
                  if self.capture_frames else self._frameless_tick())
+        self._last_frame_png = image
         self._sync_screen()
         return to_image(image)
 

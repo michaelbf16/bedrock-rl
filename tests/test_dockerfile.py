@@ -90,22 +90,22 @@ class DockerfileContractTests(unittest.TestCase):
     def test_gpu_runtime_dependencies_have_one_pinned_manifest(self):
         requirements = (ROOT / "requirements" /
                         "verl-runtime.txt").read_text()
-        lock = (ROOT / "requirements" / "verl-cu128.lock").read_text()
+        lock = (ROOT / "requirements" / "verl-cu130.lock").read_text()
         self.assertIn(
-            '--requirement "$ROOT/requirements/verl-cu128.lock"', SETUP)
+            '--requirement "$ROOT/requirements/verl-cu130.lock"', SETUP)
         self.assertIn(
-            "--requirement /opt/bedrock-rl/requirements/verl-cu128.lock",
+            "--requirement /opt/bedrock-rl/requirements/verl-cu130.lock",
             DOCKERFILE)
         for line in requirements.splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                self.assertRegex(line, r"^[A-Za-z0-9_.-]+(?:\[[^]]+\])?==")
-        self.assertIn("torch==2.9.0+cu128", lock)
-        self.assertIn("vllm==0.12.0", lock)
+                self.assertRegex(line, r"^[A-Za-z0-9_.-]+(?:\[[^]]+\])?(?:==| @ https://)")
+        self.assertIn("torch==2.10.0+cu130", lock)
+        self.assertIn("vllm-0.17.1%2Bcu130", lock)
         for line in lock.splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                self.assertRegex(line, r"^[A-Za-z0-9_.-]+==")
+                self.assertRegex(line, r"^[A-Za-z0-9_.-]+(?:==| @ https://)")
 
     def test_gpu_runtime_can_compile_triton_kernels(self):
         gpu_stage = DOCKERFILE.split("FROM cpu AS gpu", 1)[1]

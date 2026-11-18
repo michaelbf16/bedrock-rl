@@ -134,6 +134,35 @@ class SnapshotWorldMapTests(unittest.TestCase):
             (10.25, 62.0, 2.25),
         )
 
+    def test_partially_consumed_iterators_do_not_prevent_world_close(self):
+        for method, block in (("find", "diamond_ore"),
+                              ("find_source_fluids", "water")):
+            with self.subTest(method=method):
+                with SnapshotWorldMap(self.path) as world:
+                    mapping, stream = world._map, world._stream
+                    cells = getattr(world, method)(block)
+                    next(cells)
+                self.assertTrue(world.closed)
+                self.assertTrue(mapping.closed)
+                self.assertTrue(stream.closed)
+                if method == "find":
+                    with self.assertRaisesRegex(RuntimeError, "closed"):
+                        next(cells)
+                cells.close()
+
+    def test_failed_close_retains_handles_for_retry(self):
+        with SnapshotWorldMap(self.path) as world:
+            mapping, stream = world._map, world._stream
+            exported = memoryview(mapping)
+            with self.assertRaises(BufferError):
+                world.close()
+            self.assertFalse(world.closed)
+            self.assertIs(world._map, mapping)
+            self.assertIs(world._stream, stream)
+            exported.release()
+        self.assertTrue(mapping.closed)
+        self.assertTrue(stream.closed)
+
     def test_find_and_nearest_are_deterministic_and_bounded(self):
         with SnapshotWorldMap(self.path) as world:
             cells = list(world.find("diamond_ore"))

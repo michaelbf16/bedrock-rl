@@ -72,11 +72,16 @@ brl_flag --vllm-gpu-frac VLLM_GPU_FRAC
 brl_flag --vllm-max-model-len VLLM_MAX_MODEL_LEN
 
 cd "$BRL_ROOT"
+# A unique receipt binds the fine-tune to this invocation's accepted examples.
+# The parquet may legitimately still contain a previous successful harvest.
+BRL_HARVEST_RECEIPT="$(mktemp "${TMPDIR:-/tmp}/bedrock-harvest.XXXXXX")"
+trap 'rm -f "$BRL_HARVEST_RECEIPT"' EXIT
 brl_run python -m bedrock_rl.train.self_distill \
     --task "$(brl_task_yaml "$TASK")" \
     --data "$DATA" \
     --model "$MODEL" \
     --out "$BRL_SET" \
+    --receipt "$BRL_HARVEST_RECEIPT" \
     --episodes "$EPISODES" \
     --batch "${HARVEST_BATCH:-8}" \
     --hint-level "$BRL_LEVEL" \
@@ -85,13 +90,20 @@ brl_run python -m bedrock_rl.train.self_distill \
     --metrics "${BRL_METRICS%.jsonl}_harvest.jsonl" \
     2>&1 | tee -a "$BRL_LOG"
 
-if [ ! -f "$BRL_SET" ]; then
+if ! brl_run python -c '
+import json, os, sys
+with open(sys.argv[1]) as stream:
+    receipt = json.load(stream)
+sys.exit(not (receipt.get("examples", 0) > 0
+              and receipt.get("out") == os.path.abspath(sys.argv[2])
+              and os.path.isfile(sys.argv[2])))
+' "$BRL_HARVEST_RECEIPT" "$BRL_SET"; then
     # A full run cannot train without accepted trajectories. Harvest-only mode
     # reports the measured yield without treating an empty result as an error.
     cat >&2 <<EOF
 
 empty harvest after $EPISODES episodes on $TASK at hint level $BRL_LEVEL.
-Nothing was written to $BRL_SET.
+No current-run training set was written to $BRL_SET.
 
 Self-distillation trains only on trajectories that pass the task verifier, and
 this harvest produced none.

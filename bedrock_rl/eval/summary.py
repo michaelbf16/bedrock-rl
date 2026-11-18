@@ -13,10 +13,13 @@ import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
 from typing import Any, Iterable
+
+from bedrock_rl.eval.protocol import SCHEMA as PROTOCOL_SCHEMA
 
 
 SCHEMA = "bedrock.eval-curve.v1"
@@ -152,10 +155,50 @@ def _identity(record: dict[str, Any], index: int, mode: str) -> str:
     return f"position:{index}:seed:{record['seed']}"
 
 
-def _validated(path: str | Path) -> tuple[dict[str, dict[str, Any]], dict]:
+def _protocol_status(protocol, *, allow_legacy):
+    schema = protocol.get("schema")
+    if schema is None:
+        if not allow_legacy:
+            raise EvaluationError(
+                "legacy evaluation protocol has no content fingerprints; "
+                "use --allow-legacy-protocol to compare it explicitly as "
+                "unverified historical evidence")
+        return "legacy-unverified"
+    if schema != PROTOCOL_SCHEMA:
+        raise EvaluationError(f"unsupported evaluation protocol {schema!r}")
+    for field in ("task_sha256", "hint_sha256", "dataset_sha256",
+                  "input_sha256", "runtime_sha256", "initial_prompt_sha256",
+                  "processor_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(protocol.get(field, ""))):
+            raise EvaluationError(f"evaluation protocol needs a valid {field}")
+    environment = protocol.get("environment")
+    if not isinstance(environment, dict) or not re.fullmatch(
+            r"[0-9a-f]{64}", str(environment.get("binary_sha256", ""))):
+        raise EvaluationError("evaluation protocol needs an engine binary digest")
+    for field in ("snapshot_sha256", "patch_manifest_sha256",
+                  "asset_manifest_sha256"):
+        if field not in environment or (environment[field] is not None
+                and not re.fullmatch(r"[0-9a-f]{64}", str(environment[field]))):
+            raise EvaluationError(f"evaluation environment needs {field}")
+    if not isinstance(environment.get("settings"), dict) or not isinstance(
+            environment.get("view"), dict):
+        raise EvaluationError("evaluation environment needs settings and view")
+    verified = protocol.get("frozen_task_verified")
+    if type(verified) is not bool:
+        raise EvaluationError("evaluation protocol needs frozen_task_verified")
+    if not verified and not allow_legacy:
+        raise EvaluationError(
+            "evaluation used frozen rows without a task content identity; "
+            "use --allow-legacy-protocol to accept that unverified binding")
+    return "content-fingerprinted" if verified else "legacy-inputs"
+
+
+def _validated(path: str | Path, *, allow_legacy=False
+               ) -> tuple[dict[str, dict[str, Any]], dict]:
     records, digest = _load(path)
     mode = _identity_mode(records)
     indexed = {}
+    protocol_statuses = set()
     for index, record in enumerate(records):
         identity = _identity(record, index, mode)
         if identity in indexed:
@@ -186,10 +229,14 @@ def _validated(path: str | Path) -> tuple[dict[str, dict[str, Any]], dict]:
             raise EvaluationError(
                 f"trial {identity} has no evaluation protocol; sampling, "
                 "hint, and image-window provenance cannot be paired")
+        protocol_statuses.add(_protocol_status(protocol,
+                                               allow_legacy=allow_legacy))
         _number(record.get("reward"), field="reward", trial=identity)
         _number(record.get("turns"), field="turns", trial=identity,
                 nonnegative=True)
         indexed[identity] = record
+    if len(protocol_statuses) != 1:
+        raise EvaluationError("one evaluation cannot mix verified and legacy protocols")
     solved = sum(record["success"] for record in records)
     low, high = seed_clustered_interval(records)
     independent = len({record["seed"] for record in records})
@@ -211,7 +258,8 @@ def _validated(path: str | Path) -> tuple[dict[str, dict[str, Any]], dict]:
             sum(record["opened"] for record in records) / len(records)),
     }
     source = {"path": str(Path(path)), "sha256": digest,
-              "identity_mode": mode}
+              "identity_mode": mode,
+              "contract_verification": protocol_statuses.pop()}
     return indexed, {"metrics": metrics, "source": source}
 
 
@@ -249,7 +297,8 @@ def _paired_delta(base: dict[str, dict[str, Any]],
     }
 
 
-def analyze(points: Iterable[PointSpec], base: str | None = None) -> dict:
+def analyze(points: Iterable[PointSpec], base: str | None = None, *,
+            allow_legacy_protocol: bool = False) -> dict:
     """Validate and summarize a paired checkpoint evaluation curve."""
     points = list(points)
     if len(points) < 2:
@@ -271,16 +320,20 @@ def analyze(points: Iterable[PointSpec], base: str | None = None) -> dict:
     loaded = {}
     summaries = {}
     for point in points:
-        records, summary = _validated(point.records)
+        records, summary = _validated(
+            point.records, allow_legacy=allow_legacy_protocol)
         loaded[point.label] = records
         summaries[point.label] = summary
 
     base_records = loaded[base]
     base_ids = set(base_records)
     base_mode = summaries[base]["source"]["identity_mode"]
+    verification = summaries[base]["source"]["contract_verification"]
     for point in points:
         label = point.label
         mode = summaries[label]["source"]["identity_mode"]
+        if summaries[label]["source"]["contract_verification"] != verification:
+            raise EvaluationError("cannot mix content-fingerprinted and legacy evaluations")
         if mode != base_mode:
             raise EvaluationError(
                 f"{label!r} uses {mode} identities but base {base!r} uses "
@@ -329,6 +382,10 @@ def analyze(points: Iterable[PointSpec], base: str | None = None) -> dict:
         "base": base,
         "trials_per_point": len(base_records),
         "identity_mode": base_mode,
+        "contract_verification": verification,
+        "warnings": ([] if verification == "content-fingerprinted" else [
+            "Historical task/input contracts are not fully content-verified; "
+            "the legacy comparison was explicitly requested."]),
         "points": ordered,
     }
 
@@ -460,6 +517,9 @@ def _success_max(value: str) -> float:
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="build an honest paired held-out evaluation curve")
+    parser.add_argument("--allow-legacy-protocol", action="store_true",
+                        help="explicitly compare historical records without "
+                             "complete content identities; mark them unverified")
     parser.add_argument(
         "--point", action="append", nargs=3, required=True,
         metavar=("LABEL", "STEP", "RECORDS"),
@@ -488,7 +548,8 @@ def main(argv=None):
     try:
         specs = [PointSpec(label, _step(step), records)
                  for label, step, records in args.point]
-        result = analyze(specs, args.base)
+        result = analyze(specs, args.base,
+                         allow_legacy_protocol=args.allow_legacy_protocol)
         write_summary(result, args.summary)
         if args.training_metrics:
             training = load_training_scores(args.training_metrics)
@@ -502,6 +563,11 @@ def main(argv=None):
                 if extra.get("schema") != SCHEMA or not extra.get("points"):
                     raise EvaluationError(
                         f"held-out summary {path} is not a {SCHEMA} summary")
+                if (extra.get("contract_verification") != "content-fingerprinted"
+                        and not args.allow_legacy_protocol):
+                    raise EvaluationError(
+                        f"held-out summary {path} lacks verified content "
+                        "provenance; use --allow-legacy-protocol explicitly")
                 heldout.append((label, extra))
             observed = max(
                 float(point["metrics"]["success_rate"])
@@ -523,7 +589,10 @@ def main(argv=None):
             write_svg(result, args.svg_path, args.title, args.success_max)
     except (argparse.ArgumentTypeError, EvaluationError) as exc:
         parser.error(str(exc))
-    print(f"paired held-out trials: {result['trials_per_point']}")
+    for warning in result["warnings"]:
+        print(f"WARNING: {warning}")
+    print(f"paired held-out trials: {result['trials_per_point']} "
+          f"({result['contract_verification']})")
     print("label                 step   success (95% CI)       reward  "
           "turns  tool calls  delta")
     for point in result["points"]:

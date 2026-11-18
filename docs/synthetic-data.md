@@ -115,6 +115,15 @@ world or policy vetoes and is summarized by reason. Any other generator
 exception stops the batch immediately instead of being mistaken for a bad
 seed.
 
+`ParquetWriter` infers its schema from the first batch and refuses later
+unknown fields or non-null values in a field inferred as null. This also
+checks nested records and lists, so optional provenance is never silently
+dropped. For optional fields absent from early records, supply the writer's
+`features` mapping in Hugging Face `Features.to_dict()` format, for example
+`features: {seed: {_type: Value, dtype: int64}, note: {_type: Value, dtype: string}}`.
+The declared string field accepts both null and later text. Python callers
+may pass a `datasets.Features` object to `write_rows(..., features=...)`.
+
 ## Successful demonstrations
 
 A scripted policy is a closed-loop agent. It receives a fresh live episode
@@ -195,6 +204,13 @@ Each trajectory keeps its portable episode reconstruction spec once under
 `provenance.episode_spec`. Per-turn state samples contain only changing episode
 status and captured Minecraft observations, so long demonstrations do not
 repeat task paths and view configuration hundreds of times.
+The spec includes the resolved task document, its SHA-256 digest, and the
+original resource base. Replay preserves `task_bindings` even if the source
+YAML changes or is removed, while relative resource paths follow a relocated
+checkout. RL prompt rows carry the same definition in `extra_info` and the
+tool creation spec as JSON text, preserving exact fields when datasets for
+different tasks are combined. Older artifacts with only a task digest reject a changed
+YAML instead of replaying a different task.
 
 For movement policies, use `MovementProfile` from
 `bedrock_rl.sdg.policy`. It limits each decision to a realistic

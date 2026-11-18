@@ -65,7 +65,11 @@ from bedrock_rl.adapters.netherite.computer import (NEXT_COMPUTER_MESSAGE,  # no
                                      tool_call_attempts, tool_calls)
 from bedrock_rl.env import journal  # noqa: E402
 from bedrock_rl.sdg.guidance import hint_text, with_hint  # noqa: E402
-from bedrock_rl.env.task import Task, relative_path  # noqa: E402
+from bedrock_rl.env.task import Task  # noqa: E402
+from bedrock_rl.eval.protocol import (SCHEMA as PROTOCOL_SCHEMA,  # noqa: E402
+                                     digest, environment_identity,
+                                     input_identity, processor_identity,
+                                     runtime_identity)
 from bedrock_rl.env.episode import (Episode,  # noqa: E402
                                       NO_TOOL_CALL_REWARD,
                                       tool_response_text)
@@ -171,7 +175,7 @@ def execute_payloads(episode, text):
     return calls, observation, frames[-1] if frames else None, done
 
 
-def evaluation_task(rows, explicit_path=None):
+def evaluation_task(rows, explicit_path=None, *, allow_legacy=False):
     """Load the one task contract every row in an evaluation names.
 
     A frozen prompt row is already bound to a task YAML.  ``--task`` is an
@@ -181,26 +185,72 @@ def evaluation_task(rows, explicit_path=None):
     """
     if not rows:
         raise SystemExit("the evaluation dataset has no prompt rows")
-    paths = [str(row["extra_info"]["task_yaml"]) for row in rows]
     loaded = {}
-    for path in paths:
-        if path not in loaded:
-            loaded[path] = Task.load(path)
-    identities = {os.path.realpath(task.path) for task in loaded.values()}
+    tasks = []
+    for row in rows:
+        extra = row["extra_info"]
+        definition = extra.get("task_definition")
+        if definition is not None:
+            task = Task.from_definition(definition)
+        else:
+            path = str(extra["task_yaml"])
+            if path not in loaded:
+                loaded[path] = Task.load(path)
+            task = loaded[path]
+        expected = extra.get("task_digest")
+        actual = task.definition()["sha256"]
+        if expected is not None and expected != actual:
+            raise SystemExit(
+                "frozen row task digest differs from its task definition; "
+                "refusing to score a changed verifier")
+        if expected is None and definition is None and not allow_legacy:
+            raise SystemExit(
+                "frozen rows have no task content identity; regenerate them "
+                "or explicitly use --allow-legacy-inputs (unverified task)")
+        tasks.append(task)
+    identities = {task.definition()["sha256"] for task in tasks}
     if len(identities) != 1:
         raise SystemExit(
             "one evaluation cannot mix task contracts; the selected rows "
-            f"name {len(identities)} different task YAML files")
-    row_task = next(iter(loaded.values()))
+            f"name {len(identities)} different task definitions")
+    row_task = tasks[0]
     if explicit_path is None:
         return row_task
     explicit = Task.load(explicit_path)
-    if os.path.realpath(explicit.path) != os.path.realpath(row_task.path):
+    if explicit.definition()["sha256"] != row_task.definition()["sha256"]:
         raise SystemExit(
             f"--task names {explicit.path}, but the frozen dataset rows name "
             f"{row_task.path}; refusing to score one task with another "
             "task's verifier")
     return explicit
+
+
+def evaluation_protocol(task, hint, rows, args, knobs):
+    """Build path-independent identities before splitting trials into shards."""
+    task_sha256 = task.definition()["sha256"]
+    inputs = [input_identity(row, task_sha256) for row in rows]
+    verified = all(row["extra_info"].get("task_digest") is not None
+                   or row["extra_info"].get("task_definition") is not None
+                   for row in rows)
+    protocol = {
+        "schema": PROTOCOL_SCHEMA,
+        "task_sha256": task_sha256,
+        "hint_sha256": digest(hint or ""),
+        "dataset_sha256": digest(inputs),
+        "runtime_sha256": runtime_identity(),
+        "frozen_task_verified": verified,
+        "hint": bool(hint),
+        "hint_level": args.hint_level if hint else "none",
+        "finish_level": args.finish_level if hint else "off",
+        "keep_latest_images": args.keep_latest_images,
+        "blank_frames": bool(args.blank_frames),
+        "sampling": dict(knobs),
+        "max_tool_calls_per_turn": MAX_TOOL_CALLS_PER_TURN,
+        "max_model_len": int(args.max_model_len),
+        "tensor_parallel_size": int(args.tp),
+        "max_turns": int(task.max_turns),
+    }
+    return protocol, inputs
 
 
 def vllm_engine_kwargs(model_path, lora_kwargs):
@@ -760,6 +810,9 @@ def parser():
     ap.add_argument("--task", default=None,
                     help="task YAML asserted by the frozen rows; the public "
                          "bedrock CLI always supplies this")
+    ap.add_argument("--allow-legacy-inputs", action="store_true",
+                    help="explicitly evaluate older rows without a task digest; "
+                         "records retain an unverified frozen-task status")
     ap.add_argument("--model", required=True)
     ap.add_argument(
         "--tokenizer", default=None,
@@ -879,7 +932,7 @@ def main():
     # though the identical spelling trains successfully.
     policy = reg.resolve_policy(a.model, a.lora)
     model_path, adapter = policy.base, policy.adapter
-    model_path = reg.weights_path(model_path)
+    model_path = reg.weights_path(model_path, revision=policy.base_revision)
     lora_request, lora_kwargs = None, {}
     if adapter:
         rank = policy.adapter_rank
@@ -903,22 +956,15 @@ def main():
 
     raw = load_dataset("parquet", data_files=a.data)["train"]
     rows = [raw[i] for i in range(min(a.n, len(raw)))]
-    eval_task = evaluation_task(rows, a.task)
+    eval_task = evaluation_task(rows, a.task,
+                                allow_legacy=a.allow_legacy_inputs)
     hint = (hint_text(Task.load(a.hint), a.hint_level,
                       a.finish_level) if a.hint else None)
     knobs = sampling_knobs(a.temp, a.max_new_tokens)
-    protocol = {
-        "task": relative_path(eval_task.path),
-        "hint": bool(hint),
-        "hint_level": a.hint_level if hint else "none",
-        "finish_level": a.finish_level if hint else "off",
-        "keep_latest_images": a.keep_latest_images,
-        "blank_frames": bool(a.blank_frames),
-        "sampling": dict(knobs),
-        "max_tool_calls_per_turn": MAX_TOOL_CALLS_PER_TURN,
-        "max_model_len": int(a.max_model_len),
-        "tensor_parallel_size": int(a.tp),
-    }
+    protocol, input_ids = evaluation_protocol(eval_task, hint, rows, a, knobs)
+    if not protocol["frozen_task_verified"]:
+        say("WARNING: legacy inputs do not bind their frozen prompts to a "
+            "task definition; this run retains unverified-task provenance")
     # The turn budget belongs to the task, the same place Episode and
     # bedrock_rl/train/rollout.py reads it from. Every prompt row in one file
     # carries the same task_yaml, so the first row decides it.
@@ -959,6 +1005,7 @@ def main():
                       lora.processor_path(model_path, adapter))
     spec = reg.resolve(model_path)
     processor = reg.load_processor(spec, processor_path)
+    protocol["processor_sha256"] = processor_identity(processor)
     tools = tool_schema()
     # tensor_parallel_size is passed rather than left to vLLM's own
     # default of 1, so the protocol these numbers were taken under is
@@ -1009,11 +1056,12 @@ def main():
             self.ep = None
             self.broken = None
             self.rec = None
-            self.protocol = protocol
+            self.protocol = dict(protocol, input_sha256=input_ids[row_index])
             try:
                 self.ep = Episode.from_spec(
                     xi, cu_parser(self.task), task=self.task,
                     frames_root=os.path.join("/tmp", "sample_frames"))
+                self.protocol["environment"] = environment_identity(self.ep)
             except Exception as e:
                 self.fail("could not open the episode", e)
 
@@ -1070,10 +1118,13 @@ def main():
                 view = keep_last_images(msgs, keep)
                 removed = len(self.images) - keep
                 msgs, imgs = view.messages, self.images[max(removed, 0):]
-            return processor.apply_chat_template(
+            prompt = processor.apply_chat_template(
                 template_messages(msgs), tokenize=False,
                 add_generation_prompt=True,
-                tools=tools), imgs
+                tools=tools)
+            if not self.turns:
+                self.protocol["initial_prompt_sha256"] = digest(prompt)
+            return prompt, imgs
 
         def advance(self, out_text):
             self.turns.append(out_text)

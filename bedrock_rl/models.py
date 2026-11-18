@@ -222,6 +222,7 @@ class PolicyResolution:
     adapter_base: Optional[str] = None
     adapter_rank: int = 0
     adapter_alpha: int = 0
+    base_revision: Optional[str] = None
 
 
 def supported_table():
@@ -280,7 +281,8 @@ def _unknown(what, extra=""):
 def _local_spec(path):
     cfg = os.path.join(path, "config.json")
     try:
-        conf = json.load(open(cfg))
+        with open(cfg) as stream:
+            conf = json.load(stream)
     except (OSError, ValueError) as e:
         raise UnknownModel(f"cannot read {cfg}: {e}")
     mt = conf.get("model_type")
@@ -361,7 +363,41 @@ def model_revision(name):
     return hit[0].revision(hit[1])
 
 
-def download(name, **kw):
+def portable_model_identity(name, revision=None):
+    """Recover the Hub identity and commit from a standard cached snapshot.
+
+    Ordinary local checkpoints keep their path: there is no honest Hub model
+    to invent for custom weights. Cached snapshots encode their repository
+    and commit. A verl merged directory holds the unchanged base beside its
+    adapter, whose declaration identifies those base weights.
+    """
+    name = model_path(name)
+    if os.path.isdir(name):
+        merged = lora.read_adapter_config(os.path.join(name, lora.MERGED_ADAPTER))
+        declared = (merged or {}).get("base_model_name_or_path")
+        if declared and os.path.abspath(str(declared)) != os.path.abspath(name):
+            if revision and merged.get("revision") not in (None, revision):
+                raise PolicyError(
+                    f"merged base {name} is at {merged['revision']}, "
+                    f"not revision {revision}")
+            name = model_path(str(declared))
+            revision = revision or merged.get("revision")
+    parts = os.path.normpath(str(name)).split(os.sep)
+    if (len(parts) >= 3 and parts[-2] == "snapshots"
+            and parts[-3].startswith("models--")
+            and re.fullmatch(r"[0-9a-fA-F]{40}", parts[-1])):
+        ident = parts[-3][len("models--"):].replace("--", "/")
+        commit = parts[-1]
+        if revision and revision != commit:
+            raise PolicyError(
+                f"snapshot {name} is at {commit}, not revision {revision}")
+        return ident, commit
+    if os.path.isdir(name) or os.path.isabs(name):
+        return str(name), None
+    return str(name), revision or model_revision(name)
+
+
+def download(name, revision=None, **kw):
     """snapshot_download for a registry name, AT ITS PIN.
 
     One function, because `snapshot_download(model)` with no revision
@@ -369,10 +405,11 @@ def download(name, **kw):
     """
     from huggingface_hub import snapshot_download
     ident = model_path(name)
-    return snapshot_download(ident, revision=model_revision(ident), **kw)
+    return snapshot_download(
+        ident, revision=revision or model_revision(ident), **kw)
 
 
-def weights_path(name):
+def weights_path(name, revision=None):
     """A LOCAL DIRECTORY holding exactly the weights `name` names.
 
     A hub id is not a set of weights, it is a pointer, and a trainer
@@ -398,12 +435,12 @@ def weights_path(name):
     if os.path.isdir(name):
         return name
     try:
-        return download(name)
+        return download(name, revision=revision)
     except Exception:
         # The cache alone, in case what failed was the network and not
         # the request: a box that already holds the pinned snapshot is
         # entitled to run offline.
-        return download(name, local_files_only=True)
+        return download(name, revision=revision, local_files_only=True)
 
 
 # ── remote code ──────────────────────────────────────────────────────────
@@ -573,6 +610,8 @@ def load_processor(spec, path):
     value, so on any family whose tokenizer ships no pad token that fill
     value was None.
     """
+    from bedrock_rl.security import guard_transformers_saves
+    guard_transformers_saves()
     from transformers import AutoProcessor
     require_remote_code(spec, "load a processor")
     proc = AutoProcessor.from_pretrained(
@@ -637,7 +676,7 @@ def attn_impl(spec, override=None):
 
 def _model_identity(name):
     """A strict identity suitable for checking an adapter's declared base."""
-    value = model_path(name)
+    value, _ = portable_model_identity(name)
     if os.path.isdir(value):
         return "path", os.path.realpath(value)
     return "name", str(value).rstrip("/").lower()
@@ -664,7 +703,7 @@ def resolve_policy(name, adapter=None):
     base = model_path(base)
     found = str(adapter) if adapter else inferred
     if not found:
-        return PolicyResolution(base)
+        return PolicyResolution(base, base_revision=model_revision(base))
     found = os.path.abspath(os.path.expanduser(str(found)))
     if not os.path.isdir(found):
         raise PolicyError(
@@ -700,18 +739,30 @@ def resolve_policy(name, adapter=None):
     if alpha <= 0:
         raise PolicyError(f"LoRA adapter {found} has invalid alpha {alpha}")
     declared = model_path(str(declared))
+    revision = config.get("revision") or model_revision(declared)
+    if revision is not None and not isinstance(revision, str):
+        raise PolicyError(f"LoRA adapter {found} has a non-string revision")
     if (adapter and _model_identity(base) != _model_identity(declared)
             and not _merged_adapter_for(base, found)):
         raise PolicyError(
             f"LoRA adapter {found} was trained on {declared}, not {base}. "
             "Use its declared base or pass the adapter directory as MODEL.")
-    return PolicyResolution(base, found, declared, rank, alpha)
+    _, snapshot_revision = portable_model_identity(base)
+    if (os.path.isdir(base) and snapshot_revision and revision
+            and snapshot_revision != revision
+            and not _merged_adapter_for(base, found)):
+        raise PolicyError(
+            f"LoRA adapter {found} was trained at {revision}, but base "
+            f"snapshot {base} is at {snapshot_revision}")
+    return PolicyResolution(base, found, declared, rank, alpha, revision)
 
 
-def policy_paths(name, adapter=None):
+def policy_paths(name, adapter=None, *, snapshot=False):
     """Compatibility tuple for callers that need only ``(base, adapter)``."""
     policy = resolve_policy(name, adapter)
-    return policy.base, policy.adapter
+    base = (weights_path(policy.base, revision=policy.base_revision)
+            if snapshot else policy.base)
+    return base, policy.adapter
 
 
 def shell_env(name, max_turns=4, adapter=None, snapshot=False):
@@ -747,10 +798,17 @@ def shell_env(name, max_turns=4, adapter=None, snapshot=False):
     # the two are different questions -- what to load, and what it is
     # called -- that were one string only for as long as nothing pinned
     # anything.
-    revision = model_revision(base) or ""
-    ident = base
+    ident, revision = portable_model_identity(base, policy.base_revision)
+    revision = revision or ""
     if snapshot:
-        base = weights_path(base)
+        base = weights_path(base, revision=revision or None)
+        # An unpinned Hub id acquires an immutable identity at download time.
+        # Export that resolved commit too, rather than losing it at the shell
+        # boundary between the trainer's local path and the adapter exporter.
+        resolved_ident, resolved_revision = portable_model_identity(
+            base, revision or None)
+        if resolved_revision:
+            ident, revision = resolved_ident, resolved_revision
     rank, alpha = policy.adapter_rank, policy.adapter_alpha
     return "\n".join([
         f"BRL_MODEL_KEY={s.key}",
@@ -888,7 +946,7 @@ def provenance(name, adapter=None):
         "hub_id": ident,
         # None here is the thing to notice in a manifest: it means the
         # weights were whatever that repo's main was at fetch time
-        "revision": None if ident is None else model_revision(ident),
+        "revision": None if ident is None else policy.base_revision,
         "trust_remote_code": trust_remote_code(s),
         "adapter": found,
         "files": artifact_files(str(base)),

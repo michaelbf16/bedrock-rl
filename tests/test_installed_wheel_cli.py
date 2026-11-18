@@ -121,12 +121,14 @@ class InstalledWheelCLITests(unittest.TestCase):
                 "--point", "base", "0", str(records),
                 "--summary", str(summary),
                 "--svg", str(svg),
+                "--allow-legacy-protocol",
             ])
         self.assertEqual(code, 0, error)
         argv = build.call_args.args[0]
         self.assertIn(str(records), argv)
         self.assertIn(str(summary), argv)
         self.assertIn(str(svg), argv)
+        self.assertIn("--allow-legacy-protocol", argv)
 
     def test_train_dry_run_resolves_config_but_execution_refuses(self):
         path = str(self.root / "train.yaml")

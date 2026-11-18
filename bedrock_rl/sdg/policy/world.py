@@ -316,8 +316,6 @@ class SnapshotWorldMap:
 
     def close(self) -> None:
         mapping, stream = self._map, self._stream
-        self._map = None
-        self._stream = None
         # NumPy views retain an exported pointer into mmap. Drop every cached
         # view before closing it or mmap.close() raises BufferError.
         self._cluster_cache.clear()
@@ -326,8 +324,10 @@ class SnapshotWorldMap:
         self._voxel_index_data = None
         if mapping is not None:
             mapping.close()
+            self._map = None
         if stream is not None:
             stream.close()
+            self._stream = None
 
     def __enter__(self) -> SnapshotWorldMap:
         if self.closed:
@@ -524,10 +524,13 @@ class SnapshotWorldMap:
             indexed = self._indices_in_region(indexed, region)
             if limit is not None:
                 indexed = indexed[:limit]
-            states = self._voxel_index()[1]
             for value in indexed:
                 index = int(value)
-                packed = int(states[index])
+                # Retained iterators must not retain an exported mmap view
+                # across yield, or closing their world raises BufferError.
+                # The index array owns independent memory; read one scalar
+                # through the open-map guard at each iteration instead.
+                packed = self._packed_at_index(index)
                 x, y, z = self._coordinates(index)
                 yield BlockCell(x, y, z, packed >> 4, packed & 15)
             return

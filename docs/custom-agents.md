@@ -161,6 +161,16 @@ turn protocol. Its constructor receives `model` plus `environment`, `tools`,
 async def run(self, task, **kwargs) -> Trajectory: ...
 ```
 
+`ToolHarness` passes `context.metadata["count_turn"] = True` on the first
+executed call to each tool in an assistant turn. Tools sharing one session
+budget can declare the same `turn_group` string; informational tools can
+declare `turn_group = None`. A malformed call handled by the registry's
+fallback charges that fallback's group. A recipe lookup before `computer`
+therefore cannot bypass Minecraft's turn limit. `EpisodeReward` applies the
+same no-tool reward as standalone and verl rollouts when the assistant emits
+no tool-call attempts; malformed and extension-tool attempts retain the live
+episode reward.
+
 Select it with `harness: my_project.harness:Harness` in the run manifest. For
 verl training, select a custom verl agent loop instead:
 
