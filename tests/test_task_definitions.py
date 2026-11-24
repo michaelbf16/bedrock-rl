@@ -152,6 +152,24 @@ class TaskDefinitionTests(unittest.TestCase):
                           .definition()["document"] for spec in specs],
                          [item["document"] for item in definitions])
 
+    def test_parquet_specs_keep_nested_frozen_view_and_support_legacy_rows(self):
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError:
+            self.skipTest("pyarrow is optional")
+        view = {"type": "semantic", "engine_frame_size": [428, 240],
+                "engine_assets": {"kind": "procedural"}}
+        info = {"task_yaml": "missing.yaml", "seed": 5, "init_yaw": 0,
+                "init_pitch": 0}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spec.parquet"
+            for extra in ({}, {"view": view}):
+                pq.write_table(pa.Table.from_pylist([
+                    {"extra_info": {**info, **extra}}]), path)
+                self.assertEqual(load_episode_specs(path)[0].get("view"),
+                                 extra.get("view"))
+
     def test_environment_adapter_constructs_parser_from_recorded_task(self):
         from bedrock_rl.adapters.netherite.environment import NetheriteEnvironment
         task = Task(copy.deepcopy(DOCUMENT), path="missing.yaml")

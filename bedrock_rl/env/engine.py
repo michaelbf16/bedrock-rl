@@ -594,9 +594,14 @@ def check_engine(netherite_home=None):
     return problems
 
 
+def _render_settings():
+    raw = os.environ.get("NETHERITE_RENDER_SET", "")
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 def engine_argv(binary, seed, frame_w, frame_h, view_distance,
                 mobs=False, snapshot_in=None, protocol="--rl-bin",
-                world_time=None):
+                world_time=None, render_settings=None):
     """The engine command line every process in this repo is started with.
 
     ONE place builds it. A second hand-written argv is how a process ends
@@ -636,9 +641,9 @@ def engine_argv(binary, seed, frame_w, frame_h, view_distance,
     # NETHERITE_RENDER_SET carries extra registry knobs for recordings, as a
     # comma list of key=value (no_hand=1, hide_gui=1). Nothing in RlBinObs
     # samples them; they change rendered pixels only.
-    for kv in os.environ.get("NETHERITE_RENDER_SET", "").split(","):
-        if kv.strip():
-            argv += ["--set", kv.strip()]
+    for setting in (_render_settings() if render_settings is None
+                    else render_settings):
+        argv += ["--set", setting]
     return argv
 
 
@@ -1214,7 +1219,11 @@ class MagmaEnv(ObsHelpers):
         self.binary = find_binary(netherite_home, self.raster)
         self.seed = int(seed)
         self.mobs = mobs
-        self.world_time = world_time
+        self.world_time = (world_time if world_time is not None else
+                           os.environ.get("NETHERITE_WORLD_TIME") or None)
+        self.world_time = (int(self.world_time)
+                           if self.world_time not in (None, "") else None)
+        self.render_settings = _render_settings()
         self.snapshot_in = snapshot_in
         self.frames_dir = None if frames_dir is None else Path(frames_dir)
         self.frame_w, self.frame_h = frame_w, frame_h
@@ -1243,7 +1252,8 @@ class MagmaEnv(ObsHelpers):
         argv = engine_argv(self.binary, self.seed, self.frame_w,
                            self.frame_h, self.view_distance, mobs=self.mobs,
                            snapshot_in=self.snapshot_in,
-                           world_time=self.world_time)
+                           world_time=self.world_time,
+                           render_settings=self.render_settings)
         if self.frames_dir is None:
             argv += ["--render", "off"]
         else:

@@ -23,6 +23,8 @@ locally from a Minecraft client jar you own:
 
 ## Quick start
 
+Use Python 3.11 or newer. The pinned GPU runtime uses Python 3.12.
+
 ```bash
 git clone https://github.com/michaelbf16/bedrock-rl bedrock-rl
 cd bedrock-rl
@@ -110,9 +112,12 @@ step-10 gain is not statistically conclusive, so it is presented as a
 pipeline check rather than a benchmark claim.
 
 With three stochastic attempts per prompt, pass@3 is 31/288 for the base and
-64/288 for step 10 (37 paired improvements, 4 regressions; exact
-`p=1.03e-7`). This measures candidate-generation coverage, while the curve
-below remains the stricter single deterministic attempt.
+64/288 for step 10. The 288 prompts use eight poses in each of 36 worlds.
+The paired two-sided probability is `p=1.03e-7` when swapping outcomes by
+prompt and `p=0.046875` when swapping each world's eight outcomes together.
+A fixed hotbar key solves 32/288 prompts in one attempt, and three distinct
+fixed keys cover 96/288 in three attempts. The example includes the raw
+actions and a script to reproduce these controls and sensitivity checks.
 
 ![GRPO development curve through step 10](examples/equip_pickaxe_grpo/curves/learning_curve.svg)
 

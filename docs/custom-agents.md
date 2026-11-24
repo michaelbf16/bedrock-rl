@@ -48,6 +48,9 @@ uv run bedrock trial agent-run.yaml --check
 uv run bedrock trial agent-run.yaml
 ```
 
+The Minecraft session supplies screenshots by default. Set `capture_frames: false`
+under the environment component for a text-only trial.
+
 The saved trajectory retains canonical history and captured state. Context
 policies create the model-facing view without deleting that history.
 Put custom components in any importable Python package; `my_project` below is

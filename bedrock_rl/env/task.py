@@ -349,6 +349,7 @@ TASK_KEYS = frozenset({
     "settle_ticks", "decision_cost",    # here
     "max_turns",                        # env/episode.py, train/rollout.py
     "max_ticks_per_turn",               # env/episode.py, adapters/netherite/computer.py
+    "verifier_dependencies",            # eval/protocol.py
     "success", "shaping",               # here
     "fail", "no_commit", "converge",    # here, and env/episode.py
     "journal",                          # here, and env/episode.py
@@ -660,6 +661,16 @@ class Task:
         self.perception = bool(d.get("perception", False))
         from bedrock_rl.env.views import ViewSpec
         self.view = ViewSpec.parse(d.get("view"))
+        self.verifier_dependencies = d.get("verifier_dependencies")
+        if "verifier_dependencies" in d:
+            dependencies = self.verifier_dependencies
+            if not isinstance(dependencies, Mapping):
+                raise TypeError("verifier_dependencies must be a mapping")
+            reject_unknown_keys("verifier_dependencies", dependencies, {"modules", "files"})
+            for name, items in dependencies.items():
+                if (not isinstance(items, list)
+                        or not all(isinstance(item, str) and item.strip() for item in items)):
+                    raise TypeError(f"verifier_dependencies.{name} must be a list of names")
         self.success = Check(d["success"],
                              default_reward=DEFAULT_SUCCESS_REWARD)
         self.success_reward = self.success.reward
@@ -740,6 +751,12 @@ class Task:
         with open(real) as f:
             return cls(yaml.safe_load(f), path=real)
 
+    def verifier_file_digests(self):
+        """Content of the declared scoring files at this task's resource base."""
+        base = Path(self.path).resolve().parent if self.path else Path.cwd()
+        names = (self.verifier_dependencies or {}).get("files", [])
+        return {name: resources.file_digest(base / name) for name in names}
+
     def definition(self):
         """Record resolved bindings without freezing host cache defaults."""
         path = (Path(self.path).expanduser().resolve() if self.path else
@@ -751,10 +768,12 @@ class Task:
             "sha256": task_document_digest(document),
             "resource_base": relative_path(path.parent),
             "filename": path.name,
+            **({"verifier_files_sha256": self.verifier_file_digests()}
+               if (self.verifier_dependencies or {}).get("files") else {}),
         }
 
     @classmethod
-    def from_definition(cls, definition):
+    def from_definition(cls, definition, *, local_task=None):
         """Restore a saved task even if its template changed or was removed."""
         if isinstance(definition, str):
             definition = json.loads(definition)
@@ -774,6 +793,17 @@ class Task:
                 or filename in (".", "..")
                 or Path(filename).name != filename):
             raise ValueError("recorded task needs a resource base and filename")
+        declared_files = (document.get("verifier_dependencies") or {}).get("files")
+        attested = definition.get("verifier_files_sha256")
+        if local_task is not None and declared_files:
+            if task_document_digest(local_task._definition_document) != definition["sha256"]:
+                raise ValueError("supplied task differs from recorded definition")
+            if attested is not None:
+                if local_task.verifier_file_digests() != attested:
+                    raise ValueError("selected task disagrees with recorded verifier dependency files")
+                # Use the supplied task for the actual episode as well as its
+                # fingerprint. Its declared scoring assets have been attested.
+                return local_task
         base = Path(base).expanduser()
         if not base.is_absolute():
             root = resources.repo_root()
@@ -781,7 +811,15 @@ class Task:
                 raise ValueError(
                     "relative recorded task resource base needs a checkout")
             base = root / base
-        return cls(copy.deepcopy(document), path=str(base.resolve() / filename))
+        path = base.resolve() / filename
+        if (local_task is not None and declared_files and local_task.path
+                and Path(local_task.path).resolve().parent != path.parent):
+            raise ValueError("cannot relocate verifier dependency files without recorded "
+                             "file digests; regenerate the frozen rows")
+        restored = cls(copy.deepcopy(document), path=str(path))
+        if attested is not None and restored.verifier_file_digests() != attested:
+            raise ValueError("recorded verifier dependency files changed")
+        return restored
 
     def snapshot_for(self, seed, netherite_home=None):
         """Path of this seed's start-state snapshot (built lazily on
@@ -792,9 +830,13 @@ class Task:
         from bedrock_rl.env.snapshots import ensure_seed
         return ensure_seed(self, seed, netherite_home=netherite_home)
 
-    def sample_init(self, rng):
+    def sample_init(self, rng, seed=None):
+        point = self.initial_state.point_for(
+            self.seeds[0] if seed is None else seed)
+
         def draw(key, default):
-            v = self.init.get(key, default)
+            point_angle = getattr(point, key, None)
+            v = self.init.get(key, default if point_angle is None else point_angle)
             if isinstance(v, (list, tuple)):
                 return rng.uniform(float(v[0]), float(v[1]))
             return float(v)

@@ -215,6 +215,7 @@ def trajectory_sft_rows(value, keep_latest_images=1,
             "messages": json.dumps(causal_messages, **compact),
             "images": causal_images,
             "curriculum_stage": stage,
+            "source_action_count": len(assistant_indices),
             "loss_last_assistant_only": True,
         })
         yield row

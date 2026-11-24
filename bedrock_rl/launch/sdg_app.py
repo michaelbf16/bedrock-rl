@@ -57,8 +57,13 @@ else:
 results = modal.Dict.from_name(RESULTS_NAME, create_if_missing=True)
 
 
-def _result_key(run_id, invocation_id, ordinal):
-    return f"{run_id}:{invocation_id}:case:{int(ordinal):08d}"
+def _result_key(run_id, invocation_id, ordinal, cases):
+    # Samplers can read external inputs (e.g. CaseFile JSONL). Identical
+    # ordinals in the same YAML need not describe the same world or decision.
+    body = json.dumps(cases, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    return f"{run_id}:{invocation_id}:case:{int(ordinal):08d}:{digest}"
 
 
 def _attempt_key(run_id, invocation_id, attempt_id, ordinal):
@@ -288,11 +293,15 @@ def coordinate(run_id: str, invocation_id: str, start: int,
         start, start + max_candidates)
     ordinals = range(start, start + max_candidates)
 
+    candidate_keys = []
+
     def missing():
         for ordinal, group in zip(ordinals, groups):
-            if _committed_result(results.get(_result_key(
-                    run_id, invocation_id, ordinal))) is None:
-                yield ordinal, [case.to_dict() for case in group]
+            cases = [case.to_dict() for case in group]
+            key = _result_key(run_id, invocation_id, ordinal, cases)
+            candidate_keys.append(key)
+            if _committed_result(results.get(key)) is None:
+                yield ordinal, cases
 
     pending = iter(missing())
     try:
@@ -317,8 +326,13 @@ def coordinate(run_id: str, invocation_id: str, start: int,
     committed = 0
     started = time.time()
     result_deadline = started + 2700
-    for ordinal in ordinals:
-        key = _result_key(run_id, invocation_id, ordinal)
+    # spawn_map has submitted all inputs. Only compact lookup keys remain
+    # in memory, and both publication and resume use the sampled case group.
+    if len(candidate_keys) != max_candidates:
+        if calls is not None:
+            calls.cancel()
+        raise ValueError("scout sampler returned fewer worlds than requested")
+    for ordinal, key in enumerate(candidate_keys, start):
         attempt_key = _attempt_key(
             run_id, invocation_id, attempt_id, ordinal)
         row = None
@@ -407,7 +421,7 @@ def coordinate(run_id: str, invocation_id: str, start: int,
             item["case"] for row in accepted for item in row["accepted"]
         ],
         "accepted_keys": [
-            _result_key(run_id, invocation_id, row["ordinal"])
+            candidate_keys[row["ordinal"] - start]
             for row in accepted
         ],
         "rejected": rejected,

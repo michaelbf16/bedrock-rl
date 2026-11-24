@@ -854,11 +854,14 @@ def train_plan(cfg, sets=(), resolve=str, origin="the config"):
             raise ConfigError(
                 f"{origin}: train_bs, rollout_n, and agent_workers must be "
                 "positive")
-        rollouts = train_bs * rollout_n
+        remax = env.get("ADV") == "remax"
+        requests_per_prompt = rollout_n + int(remax)
+        rollouts = train_bs * requests_per_prompt
         if workers is not None and rollouts % workers:
+            factor = "(rollout_n + 1)" if remax else "rollout_n"
             raise ConfigError(
                 f"{origin}: agent_workers ({workers}) must divide "
-                f"train_bs * rollout_n ({train_bs} * {rollout_n} = "
+                f"train_bs * {factor} ({train_bs} * {requests_per_prompt} = "
                 f"{rollouts})")
     return TrainPlan(kind, target, script, task, model, steps, algorithm, env)
 

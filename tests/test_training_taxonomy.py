@@ -126,6 +126,13 @@ presets:
             "agent_workers (24) must divide train_bs * rollout_n "
             "(32 * 8 = 256)", message)
 
+    def test_remax_agent_workers_partition_samples_and_greedy_baselines(self):
+        run = dict(trainer="rl", algorithm="remax", train_bs=2, rollout_n=2)
+        self.assertEqual(self.plan(**run, agent_workers=3).env["AGENT_WORKERS"],
+                         "3")
+        self.assertIn("train_bs * (rollout_n + 1) (2 * 3 = 6)",
+                      self.error(**run, agent_workers=4))
+
     def test_standalone_distillation_sampling_knobs_reach_launchers(self):
         for trainer in ("sdft", "sdpo"):
             with self.subTest(trainer=trainer):

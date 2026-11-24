@@ -344,22 +344,36 @@ def _assistant_programs(trajectory):
     from bedrock_rl.adapters.netherite.computer import cu_payload
     from bedrock_rl.core.tools import ToolCall
 
+    from bedrock_rl.core.sampling import (
+        EPISODE_DONE_TOOL_MESSAGE, TOOL_CALL_LIMIT_MESSAGE,
+    )
+
+    skipped = {(record["turn"], record["call_id"]) for record in
+               trajectory.metadata.get("tool_results", ())
+               if record.get("metadata", {}).get("skipped")}
+    turns = []
+    for message in trajectory.messages:
+        if message.get("role") == "assistant":
+            turns.append(message.get("tool_calls") or ())
+        elif message.get("role") == "tool" and message.get("content") in (
+                EPISODE_DONE_TOOL_MESSAGE, TOOL_CALL_LIMIT_MESSAGE):
+            # Local rollouts record skipped calls in the transcript, without
+            # separate tool-result metadata. IDs can repeat across turns.
+            skipped.add((len(turns) - 1, message["tool_call_id"]))
+
     programs = []
-    for message_index, message in enumerate(trajectory.messages):
-        if message.get("role") != "assistant":
-            continue
-        for raw in message.get("tool_calls") or ():
+    for turn, calls in enumerate(turns):
+        first = True
+        for raw in calls:
+            if (turn, raw["id"]) in skipped:
+                continue
             call = ToolCall.from_openai(raw)
             if call.name != "computer":
                 raise ValueError(
-                    f"assistant message {message_index} calls {call.name!r}; "
+                    f"assistant turn {turn} calls {call.name!r}; "
                     "renderer replay accepts canonical computer trajectories")
-            arguments = raw["function"].get("arguments", {})
-            # Match the live tool boundary exactly. OpenAI tool arguments are
-            # the {"actions": ...} wrapper; Episode's parser consumes the
-            # value under actions. cu_payload is the one production reader of
-            # that boundary and preserves the saved action order and values.
-            programs.append(cu_payload(arguments))
+            programs.append((cu_payload(call.arguments), first))
+            first = False
     if not programs:
         raise ValueError("trajectory has no assistant computer calls to replay")
     return programs
@@ -459,8 +473,12 @@ def _verify_replay(trajectory, recorded, episode, view):
         scalar_mismatch.append(
             f"reward expected {expected_reward!r}, got {actual['reward']!r}")
     expected_events = _event_contract(trajectory.state.events)
-    actual_events = _event_contract(episode.env.journal)
-    if expected_events and actual_events != expected_events:
+    # Legacy recordings and scripted SDG retain the full native journal.
+    # Standalone trials omit setup events from the reward-facing trace.
+    start = episode.journal_start if "event_start" in recorded else 0
+    actual_events = _event_contract(episode.env.journal[start:])
+    has_event_trace = bool(expected_events) or "event_start" in recorded
+    if has_event_trace and actual_events != expected_events:
         scalar_mismatch.append(
             f"event stream expected {len(expected_events)} records, got "
             f"{len(actual_events)} or different event content/order")
@@ -668,12 +686,12 @@ def replay_trajectory_view(trajectory, view, *, recording_every=5,
                 f"could not start replay view {view!r}; set {hint} to a "
                 f"matching built Netherite checkout. Cause: {exc}") from exc
         programs = _assistant_programs(trajectory)
-        for index, program in enumerate(programs):
+        for index, (program, count_turn) in enumerate(programs):
             if episode.done:
                 raise RuntimeError(
                     f"replay view {view!r} terminated before saved computer "
                     f"call {index} of {len(programs)}")
-            episode.step(program)
+            episode.step(program, count_turn=count_turn)
         terminal = _verify_replay(trajectory, recorded, episode, view)
         if not collector.frames:
             raise RuntimeError(

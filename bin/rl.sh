@@ -377,16 +377,20 @@ fi
 # verl chunks the generated batch equally across agent-loop workers. Its
 # upstream default is always eight, which crashes a legitimate 2x2 RLOO
 # smoke only after model startup. Auto chooses the largest worker count up
-# to eight that divides this run's actual generated batch.
+# to eight that divides this run's actual generated batch. ReMax appends a
+# greedy baseline for every prompt before handing the batch to the workers.
+_brl_generated_batch=$((TRAIN_BS * ROLLOUT_N))
+if [[ "$ADV" == remax ]]; then
+    _brl_generated_batch=$((_brl_generated_batch + TRAIN_BS))
+fi
 if [[ "${AGENT_WORKERS:-auto}" == auto ]]; then
-    _brl_generated_batch=$((TRAIN_BS * ROLLOUT_N))
     AGENT_WORKERS=$((_brl_generated_batch < 8 ? _brl_generated_batch : 8))
     while (( _brl_generated_batch % AGENT_WORKERS != 0 )); do
         AGENT_WORKERS=$((AGENT_WORKERS - 1))
     done
 elif ! [[ "$AGENT_WORKERS" =~ ^[1-9][0-9]*$ ]] \
-        || (( (TRAIN_BS * ROLLOUT_N) % AGENT_WORKERS != 0 )); then
-    echo "AGENT_WORKERS must be a positive divisor of TRAIN_BS*ROLLOUT_N" >&2
+        || (( _brl_generated_batch % AGENT_WORKERS != 0 )); then
+    echo "AGENT_WORKERS must be a positive divisor of the $_brl_generated_batch rollout requests" >&2
     exit 2
 fi
 

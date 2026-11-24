@@ -608,9 +608,9 @@ class SemanticMediaTests(unittest.TestCase):
                 self._observer = kwargs["tick_observer"]
                 self.identity = (seed, yaw, pitch)
 
-            def step(self, program):
+            def step(self, program, *, count_turn=True):
                 self.seen.append(program)
-                self.turns += 1
+                self.turns += int(count_turn)
                 self.nlines += 1
                 if self.turns == 2:
                     self.done = self.success = True

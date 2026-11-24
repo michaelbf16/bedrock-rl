@@ -71,6 +71,56 @@ class _PassGenerator:
         return {"case": case.to_dict()}
 
 
+class _ExitSecondWorker(_PassGenerator):
+    def __call__(self, case):
+        if case.index == 1:
+            os._exit(17)  # A native worker failure bypasses Python cleanup.
+        return super().__call__(case)
+
+
+class _LifecycleGenerator:
+    """Deterministically exercise worker teardown and slot reuse."""
+    def __init__(self, root, mode, **_):
+        self.root = Path(root)
+        self.mode = mode
+        self.index = None
+
+    def wait_file(self, name):
+        deadline = time.monotonic() + 8
+        while not (self.root / name).exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"missing rendezvous {name}")
+            time.sleep(0.01)
+
+    def __call__(self, case):
+        import signal
+        import threading
+
+        self.index = case.index
+        if self.mode == "teardown":
+            threading.Thread(target=time.sleep, args=(6,), daemon=False).start()
+        if self.mode == "cancel":
+            if case.index == 0:
+                self.wait_file("tail")
+            else:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                (self.root / "tail").write_text(str(os.getpid()))
+                time.sleep(6)
+        if self.mode == "devices":
+            if case.index == 0:
+                (self.root / "started").touch()
+                self.wait_file("third")
+            elif case.index == 1:
+                self.wait_file("started")
+            else:
+                (self.root / "third").touch()
+        return {"pid": os.getpid(), "device": os.getenv("NETHERITE_ENV_GPUS")}
+
+    def close(self):
+        if self.index is not None:
+            (self.root / f"closed-{self.index}").touch()
+
+
 class _ThreadUnsafeGenerator(_PassGenerator):
     thread_safe = False
 
@@ -1504,6 +1554,66 @@ class GenerationTests(unittest.TestCase):
             "timeout_seconds": 0.05,
             "scope": "case",
         })
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"),
+                         "candidate deadlines require POSIX workers")
+    def test_recycled_worker_death_fails_without_losing_a_callback(self):
+        # If workers are only sampled at heartbeat time, a replacement can
+        # disappear between polls and leave a permanently pending case.
+        started = time.monotonic()
+
+        def watchdog(_state):
+            if time.monotonic() - started > 10:
+                self.fail("executor waited for a dead candidate")
+
+        outcomes = ProcessExecutor(
+            workers=1, candidate_timeout_seconds=1, heartbeat_seconds=0.5
+        ).run([Case(i, i, i) for i in range(3)],
+              ComponentSpec(f"{__name__}:_ExitSecondWorker"), base_dir=".",
+              metadata={}, heartbeat=watchdog)
+        self.addCleanup(outcomes.close)
+        self.assertTrue(next(outcomes)["ok"])
+        with self.assertRaisesRegex(RuntimeError, "code 17.*candidate 1"):
+            next(outcomes)
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"),
+                         "candidate deadlines require POSIX workers")
+    def test_timed_worker_cleanup_and_cancel_are_bounded(self):
+        for mode, count in (("teardown", 1), ("cancel", 2)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                generator = ComponentSpec(f"{__name__}:_LifecycleGenerator",
+                                          {"root": directory, "mode": mode})
+                outcomes = ProcessExecutor(workers=count, start_method="spawn",
+                                           candidate_timeout_seconds=10).run(
+                    [Case(i, i, i) for i in range(count)], generator,
+                    base_dir=directory, metadata={})
+                try:
+                    start = time.monotonic()
+                    head = next(outcomes)["value"]
+                    if mode == "cancel":
+                        start = time.monotonic()
+                finally:
+                    outcomes.close()
+                self.assertLess(time.monotonic() - start, 5)
+                self.assertTrue((Path(directory) / "closed-0").exists())
+                pid = (int((Path(directory) / "tail").read_text())
+                       if mode == "cancel" else head["pid"])
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"),
+                         "candidate deadlines require POSIX workers")
+    def test_timed_replacements_inherit_the_free_gpu_slot(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"NETHERITE_ENV_GPUS": "0,1"}):
+            generator = ComponentSpec(f"{__name__}:_LifecycleGenerator",
+                                      {"root": directory, "mode": "devices"})
+            results = list(ProcessExecutor(
+                workers=2, start_method="spawn", candidate_timeout_seconds=10
+            ).run([Case(i, i, i) for i in range(3)], generator,
+                  base_dir=directory, metadata={}))
+            self.assertEqual([result["value"]["device"] for result in results],
+                             ["0", "1", "1"])
 
     def test_candidate_timeout_must_be_finite_and_positive(self):
         for value in (0, -1, float("nan"), float("inf")):

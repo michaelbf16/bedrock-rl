@@ -164,13 +164,21 @@ def _protocol_status(protocol, *, allow_legacy):
                 "use --allow-legacy-protocol to compare it explicitly as "
                 "unverified historical evidence")
         return "legacy-unverified"
-    if schema != PROTOCOL_SCHEMA:
+    previous = schema == "bedrock.eval-protocol.v2"
+    if previous and not allow_legacy:
+        raise EvaluationError(
+            "v2 evaluation records lack custom verifier identities; "
+            "use --allow-legacy-protocol to compare them as historical evidence")
+    if not previous and schema != PROTOCOL_SCHEMA:
         raise EvaluationError(f"unsupported evaluation protocol {schema!r}")
     for field in ("task_sha256", "hint_sha256", "dataset_sha256",
                   "input_sha256", "runtime_sha256", "initial_prompt_sha256",
                   "processor_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", str(protocol.get(field, ""))):
             raise EvaluationError(f"evaluation protocol needs a valid {field}")
+    if not previous and not re.fullmatch(
+            r"[0-9a-f]{64}", str(protocol.get("verifier_sha256", ""))):
+        raise EvaluationError("evaluation protocol needs a valid verifier_sha256")
     environment = protocol.get("environment")
     if not isinstance(environment, dict) or not re.fullmatch(
             r"[0-9a-f]{64}", str(environment.get("binary_sha256", ""))):
@@ -190,6 +198,17 @@ def _protocol_status(protocol, *, allow_legacy):
         raise EvaluationError(
             "evaluation used frozen rows without a task content identity; "
             "use --allow-legacy-protocol to accept that unverified binding")
+    if previous:
+        return "v2-unverified-verifier"
+    dependencies = protocol.get("verifier_dependencies_verified")
+    if type(dependencies) is not bool:
+        raise EvaluationError("evaluation protocol needs verifier_dependencies_verified")
+    if not dependencies:
+        if not allow_legacy:
+            raise EvaluationError(
+                "custom verifier dependencies are undeclared; add verifier_dependencies "
+                "to the task or use --allow-legacy-protocol for an unverified comparison")
+        return "undeclared-verifier-dependencies"
     return "content-fingerprinted" if verified else "legacy-inputs"
 
 
@@ -384,8 +403,8 @@ def analyze(points: Iterable[PointSpec], base: str | None = None, *,
         "identity_mode": base_mode,
         "contract_verification": verification,
         "warnings": ([] if verification == "content-fingerprinted" else [
-            "Historical task/input contracts are not fully content-verified; "
-            "the legacy comparison was explicitly requested."]),
+            "Some evaluation inputs or scoring dependencies lack verified identities. "
+            "The historical or unverified comparison was explicitly requested."]),
         "points": ordered,
     }
 

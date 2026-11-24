@@ -69,7 +69,7 @@ from bedrock_rl.env.task import Task  # noqa: E402
 from bedrock_rl.eval.protocol import (SCHEMA as PROTOCOL_SCHEMA,  # noqa: E402
                                      digest, environment_identity,
                                      input_identity, processor_identity,
-                                     runtime_identity)
+                                     runtime_identity, verifier_identity)
 from bedrock_rl.env.episode import (Episode,  # noqa: E402
                                       NO_TOOL_CALL_REWARD,
                                       tool_response_text)
@@ -185,13 +185,17 @@ def evaluation_task(rows, explicit_path=None, *, allow_legacy=False):
     """
     if not rows:
         raise SystemExit("the evaluation dataset has no prompt rows")
+    explicit = Task.load(explicit_path) if explicit_path is not None else None
     loaded = {}
     tasks = []
     for row in rows:
         extra = row["extra_info"]
         definition = extra.get("task_definition")
         if definition is not None:
-            task = Task.from_definition(definition)
+            try:
+                task = Task.from_definition(definition, local_task=explicit)
+            except ValueError as exc:
+                raise SystemExit(f"{exc}; refusing to score a changed verifier") from exc
         else:
             path = str(extra["task_yaml"])
             if path not in loaded:
@@ -213,16 +217,25 @@ def evaluation_task(rows, explicit_path=None, *, allow_legacy=False):
         raise SystemExit(
             "one evaluation cannot mix task contracts; the selected rows "
             f"name {len(identities)} different task definitions")
-    row_task = tasks[0]
-    if explicit_path is None:
-        return row_task
-    explicit = Task.load(explicit_path)
-    if explicit.definition()["sha256"] != row_task.definition()["sha256"]:
-        raise SystemExit(
-            f"--task names {explicit.path}, but the frozen dataset rows name "
-            f"{row_task.path}; refusing to score one task with another "
-            "task's verifier")
-    return explicit
+    selected = tasks[0]
+    if explicit is not None:
+        if explicit.definition()["sha256"] != selected.definition()["sha256"]:
+            raise SystemExit(
+                f"--task names {explicit.path}, but the frozen dataset rows name "
+                f"{selected.path}; refusing to score one task with another "
+                "task's verifier")
+        tasks.append(explicit)
+        selected = explicit
+    if (selected.verifier_dependencies or {}).get("files"):
+        # Equal YAML can reference different bytes beside different task files.
+        # Native Episode.from_spec restores each row from its own resource base.
+        resource_bases = {os.path.dirname(os.path.abspath(task.path)): task
+                          for task in tasks}
+        if len(resource_bases) > 1 and len({
+                verifier_identity(task) for task in resource_bases.values()}) > 1:
+            raise SystemExit("frozen rows and selected task disagree on verifier "
+                             "dependency files; refusing to score mixed verifiers")
+    return selected
 
 
 def evaluation_protocol(task, hint, rows, args, knobs):
@@ -232,12 +245,15 @@ def evaluation_protocol(task, hint, rows, args, knobs):
     verified = all(row["extra_info"].get("task_digest") is not None
                    or row["extra_info"].get("task_definition") is not None
                    for row in rows)
+    verifier_sha256, verifier_verified = verifier_identity(task)
     protocol = {
         "schema": PROTOCOL_SCHEMA,
         "task_sha256": task_sha256,
         "hint_sha256": digest(hint or ""),
         "dataset_sha256": digest(inputs),
         "runtime_sha256": runtime_identity(),
+        "verifier_sha256": verifier_sha256,
+        "verifier_dependencies_verified": verifier_verified,
         "frozen_task_verified": verified,
         "hint": bool(hint),
         "hint_level": args.hint_level if hint else "none",
@@ -962,6 +978,9 @@ def main():
                       a.finish_level) if a.hint else None)
     knobs = sampling_knobs(a.temp, a.max_new_tokens)
     protocol, input_ids = evaluation_protocol(eval_task, hint, rows, a, knobs)
+    if not protocol["verifier_dependencies_verified"]:
+        say("WARNING: custom verifier has no declared verifier_dependencies; "
+            "the scoring dependency contract is unverified")
     if not protocol["frozen_task_verified"]:
         say("WARNING: legacy inputs do not bind their frozen prompts to a "
             "task definition; this run retains unverified-task provenance")

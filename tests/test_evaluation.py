@@ -5,6 +5,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from bedrock_rl.eval.protocol import SCHEMA
 from bedrock_rl.eval import (EvaluationError, PointSpec, analyze,
                              combined_svg, load_training_scores,
                              seed_clustered_interval, wilson_interval,
@@ -24,11 +25,12 @@ def trial(identity, seed, success, reward, turns, actions=None,
         "opened": False,
         "broken": broken,
         "protocol": {
-            "schema": "bedrock.eval-protocol.v2",
+            "schema": SCHEMA,
             **{key: "a" * 64 for key in (
                 "task_sha256", "hint_sha256", "dataset_sha256", "input_sha256",
-                "runtime_sha256", "initial_prompt_sha256", "processor_sha256")},
+                "runtime_sha256", "verifier_sha256", "initial_prompt_sha256", "processor_sha256")},
             "frozen_task_verified": True,
+            "verifier_dependencies_verified": True,
             "environment": {"binary_sha256": "b" * 64,
                             "patch_manifest_sha256": None,
                             "asset_manifest_sha256": None,

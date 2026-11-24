@@ -105,7 +105,7 @@ def load_demonstrations(path: str | Path) -> list[Demonstration]:
     """Load expert demonstrations from trajectory JSON/JSONL or SFT parquet."""
     path = Path(path)
     suffix = path.suffix.lower()
-    rows: list[Mapping[str, Any]]
+    rows: Iterable[Mapping[str, Any]]
     if suffix == ".jsonl":
         with path.open() as stream:
             rows = [json.loads(line) for line in stream if line.strip()]
@@ -114,17 +114,45 @@ def load_demonstrations(path: str | Path) -> list[Demonstration]:
             value = json.load(stream)
         rows = value if isinstance(value, list) else [value]
     elif suffix in (".parquet", ".pq"):
-        import pandas as pd
-        frame = pd.read_parquet(path)
-        rows = frame.to_dict("records")
+        import pyarrow.dataset as ds
+        dataset = ds.dataset(path, format="parquet", partitioning="hive")
+        fields = ("messages", "answer", "seed", "metadata", "turns",
+                  "source_action_count", "source_trajectory_id",
+                  "curriculum_stage", "loss_last_assistant_only")
+        columns = [name for name in fields if name in dataset.schema.names]
+        rows = (row for batch in dataset.to_batches(columns=columns)
+                for row in batch.to_pylist())
     else:
         raise ValueError("demonstrations must be .json, .jsonl, or .parquet")
     demos = []
+    completed_sources = set()
     for row in rows:
-        # Canonical trajectory records and SFT rows both carry messages.
+        # The native SFT writer and harvester export one causal prefix per
+        # action. Only the final prefix contains the expert's whole solution.
+        # Earlier exports record the total as turns. An output filtered to
+        # grounded actions may contain no final prefix for a particular run.
+        source = row.get("source_trajectory_id")
+        if row.get("loss_last_assistant_only") or source:
+            count = row.get("source_action_count")
+            if count is None:
+                count = row.get("turns")
+            stage = row.get("curriculum_stage")
+            if count is not None:
+                if stage is None:
+                    stage = sum(m.get("role") == "assistant"
+                                for m in _messages(row["messages"]))
+                if stage != count:
+                    continue
+            elif source:
+                raise ValueError(f"SFT source {source!r} has no action count "
+                                 "to identify its complete demonstration")
+            if source and source in completed_sources:
+                continue
+            if source:
+                completed_sources.add(source)
         demos.append(Demonstration(_demo_from_row(row), _demo_seed(row)))
     if not demos:
-        raise ValueError(f"no demonstrations in {path}")
+        raise ValueError(f"no complete demonstrations in {path}")
     return demos
 
 

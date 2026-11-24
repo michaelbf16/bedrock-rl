@@ -28,6 +28,8 @@ and bare example-name discovery therefore still require a clone. Keeping that
 boundary explicit avoids writing outputs into site-packages or pretending the
 separate C engine is wheel data.
 """
+from functools import lru_cache
+import hashlib
 from pathlib import Path
 
 _PKG = Path(__file__).resolve().parent
@@ -36,6 +38,24 @@ _PKG = Path(__file__).resolve().parent
 _CHECKOUT = _PKG.parent
 # a wheel: the same trees, force-included under the package
 _PACKAGED = _PKG / "_data"
+
+
+@lru_cache(maxsize=256)
+def _file_digest(path, signature):
+    del signature
+    checksum = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest()
+
+
+def file_digest(path):
+    """Hash bytes once per file version, including in-place replacements."""
+    path = Path(path).resolve()
+    stat = path.stat()
+    return _file_digest(str(path), (stat.st_dev, stat.st_ino, stat.st_size,
+                                    stat.st_mtime_ns, stat.st_ctime_ns))
 
 
 def repo_root():

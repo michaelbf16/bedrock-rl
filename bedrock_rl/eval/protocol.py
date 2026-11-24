@@ -1,41 +1,26 @@
 """Content identities for evaluation inputs, independent of host paths."""
 
-from functools import lru_cache
 import hashlib
+from importlib import import_module
+from importlib.machinery import EXTENSION_SUFFIXES
+import inspect
 import io
 import json
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from bedrock_rl.resources import file_digest
 from bedrock_rl.env.engine import PATCH_MANIFEST_NAME
 from bedrock_rl.env.views import ASSET_MANIFEST_NAME
 
 
-SCHEMA = "bedrock.eval-protocol.v2"
+SCHEMA = "bedrock.eval-protocol.v3"
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, allow_nan=False,
         separators=(",", ":")).encode()).hexdigest()
-
-
-@lru_cache(maxsize=256)
-def _file_digest(path, signature):
-    del signature
-    checksum = hashlib.sha256()
-    with open(path, "rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            checksum.update(block)
-    return checksum.hexdigest()
-
-
-def file_digest(path):
-    """Hash bytes once per file version, including in-place replacements."""
-    path = Path(path).resolve()
-    stat = path.stat()
-    return _file_digest(str(path), (stat.st_dev, stat.st_ino, stat.st_size,
-                                    stat.st_mtime_ns, stat.st_ctime_ns))
 
 
 def image_identity(image):
@@ -65,6 +50,59 @@ def input_identity(row, task_sha256):
         "init_pitch": float(extra["init_pitch"]),
         "view": extra.get("view"),
     })
+
+
+def verifier_identity(task):
+    """Bind custom scoring code, including helpers shipped in its package."""
+    from bedrock_rl.core.components import load_object
+
+    packages = set()
+    for check in (task.success, task.fail, *task.shaping):
+        if check is None:
+            continue
+        if check.custom is None:
+            # The built-in modules are covered by runtime_identity. Extension
+            # modules may also install a named predicate using @check_type.
+            if check.fn.__module__ in ("bedrock_rl.env.task", "bedrock_rl.env.journal"):
+                continue
+            implementations = (check.fn,)
+        else:
+            packages.add(check.type.partition(":")[0].partition(".")[0])
+            implementations = (load_object(check.type),
+                               getattr(check.custom, "holds", check.custom))
+        for obj in implementations:
+            module = inspect.getmodule(obj) or inspect.getmodule(type(obj))
+            if module is None:
+                raise ValueError(f"cannot identify verifier {check.type!r}")
+            packages.add(module.__name__.split(".")[0])
+
+    declared = task.verifier_dependencies
+    verified = not packages or declared is not None
+    dependencies = declared or {}
+    packages.update(dependencies.get("modules", []))
+    sources = {}
+    for name in sorted(packages):
+        package = import_module(name)
+        locations = getattr(package, "__path__", None)
+        if locations is None:
+            origin = getattr(package, "__file__", None)
+            if not origin or not Path(origin).is_file():
+                raise ValueError(f"verifier module {name!r} has no hashable file")
+            sources[name] = file_digest(origin)
+            continue
+        files = {}
+        for location in locations:
+            root = Path(location)
+            for path in root.rglob("*"):
+                if path.name.endswith((".py", *EXTENSION_SUFFIXES)) and path.is_file():
+                    key = path.relative_to(root).as_posix()
+                    if key in files:
+                        raise ValueError(f"ambiguous verifier package file {name}/{key}")
+                    files[key] = file_digest(path)
+        if not files:
+            raise ValueError(f"verifier package {name!r} has no hashable code")
+        sources[name] = files
+    return digest({"modules": sources, "files": task.verifier_file_digests()}), verified
 
 
 def runtime_identity():

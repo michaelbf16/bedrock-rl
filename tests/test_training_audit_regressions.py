@@ -33,6 +33,87 @@ def conversation():
 
 
 class CausalTrainingTests(unittest.TestCase):
+    @unittest.skipUnless(HAS_TORCH and importlib.util.find_spec("transformers")
+                         and importlib.util.find_spec("datasets"),
+                         "the SFT trainer is optional")
+    def test_text_only_and_mixed_batches_preserve_image_order(self):
+        import torch
+        from bedrock_rl.train.sft import Collator
+
+        def row(ids, pixels=None, grid=None):
+            tokens = torch.tensor(ids)
+            return dict(input_ids=tokens, labels=tokens,
+                        attention_mask=torch.ones_like(tokens),
+                        pixel_values=pixels, image_grid_thw=grid)
+        collate = Collator(0)
+        text = row([5])
+        self.assertEqual(set(collate([text])),
+                         {"input_ids", "attention_mask", "labels"})
+        a = row([2, 3], torch.tensor([[11.], [12.]]),
+                torch.tensor([[1, 2, 2], [1, 4, 2]]))
+        b = row([4, 6], torch.tensor([[13.]]), torch.tensor([1, 8, 2]))
+        batch = collate([a, text, b])
+        self.assertEqual(batch["labels"].tolist(), [[2, 3], [5, -100], [4, 6]])
+        self.assertEqual(batch["pixel_values"].flatten().tolist(), [11, 12, 13])
+        self.assertEqual(batch["image_grid_thw"].tolist(),
+                         [[1, 2, 2], [1, 4, 2], [1, 8, 2]])
+
+    @unittest.skipUnless(HAS_TORCH and importlib.util.find_spec("transformers")
+                         and importlib.util.find_spec("datasets"),
+                         "the SFT trainer is optional")
+    def test_missing_scheduler_falls_back_to_previous_checkpoint(self):
+        from bedrock_rl.train.sft import checkpoint_problem, newest_resumable
+
+        with tempfile.TemporaryDirectory() as directory:
+            old = Path(directory) / "checkpoint-1"
+            old.mkdir()
+            for name in ("trainer_state.json", "model.safetensors",
+                         "optimizer.pt", "scheduler.pt"):
+                (old / name).touch()
+            new = Path(directory) / "checkpoint-2"
+            shutil.copytree(old, new)
+            (new / "scheduler.pt").unlink()
+            shard_dir = new / "global_step2"
+            shard_dir.mkdir()
+            (new / "latest").write_text("global_step2\n")
+            self.assertIn("scheduler.pt", checkpoint_problem(new))
+            self.assertEqual(newest_resumable(directory, deepspeed_config=None),
+                             str(old))
+            # Even a *populated* stray tag cannot satisfy ordinary Trainer.
+            (shard_dir / "mp_rank_00_model_states.pt").touch()
+            self.assertIn("scheduler.pt", checkpoint_problem(new, deepspeed_config=None))
+
+    @unittest.skipUnless(HAS_TORCH and importlib.util.find_spec("transformers")
+                         and importlib.util.find_spec("datasets"),
+                         "the SFT trainer is optional")
+    def test_deepspeed_resume_checks_selected_tag_and_optimizer_layout(self):
+        from bedrock_rl.train.sft import checkpoint_problem
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "trainer_state.json").touch()
+            # Non-ZeRO can embed all optimizer/scheduler state in this model
+            # file. ZeRO-3 can resume directly from native partitions.
+            ordinary = {"optimizer": {"type": "Adam"}, "zero_optimization": {"stage": 0}}
+            zero = {"zero_optimization": {"stage": 3}}
+            tag = root / "global_step7"
+            tag.mkdir()
+            (root / "latest").write_text("global_step7\n")
+            self.assertIn("no DeepSpeed model state",
+                          checkpoint_problem(root, deepspeed_config=ordinary))
+            (tag / "mp_rank_00_model_states.pt").touch()
+            self.assertIsNone(checkpoint_problem(root, deepspeed_config=ordinary))
+            self.assertIsNone(checkpoint_problem(root))
+            (tag / "mp_rank_00_model_states.pt").rename(
+                tag / "zero_pp_rank_0_mp_rank_00_model_states.pt")
+            self.assertIn("optimizer partitions", checkpoint_problem(root, deepspeed_config=zero))
+            (tag / "bf16_zero_pp_rank_0_mp_rank_00_optim_states.pt").touch()
+            self.assertIn("scheduler.pt", checkpoint_problem(root, deepspeed_config=zero))
+            (root / "scheduler.pt").touch()
+            self.assertIsNone(checkpoint_problem(root, deepspeed_config=zero))
+            (root / "latest").write_text("global_step6")
+            self.assertIn("global_step6", checkpoint_problem(root, deepspeed_config=zero))
+
     def test_full_rows_expand_to_actions_before_applying_image_window(self):
         original = {"messages": json.dumps(conversation()),
                     "images": ["first", "second", "terminal"]}
@@ -88,6 +169,7 @@ class CausalTrainingTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         for index, row in enumerate(rows):
             self.assertTrue(row["loss_last_assistant_only"])
+            self.assertEqual(row["source_action_count"], 2)
             self.assertEqual(row["images"][0]["bytes"],
                              png_bytes(rollout.images[index]))
             messages = json.loads(row["messages"])
@@ -156,7 +238,8 @@ if args[:2] == ["-m", "bedrock_rl.train.self_distill"]:
     receipt = pathlib.Path(args[args.index("--receipt") + 1])
     receipt.write_text(json.dumps({"examples": count, "out": os.path.abspath(out)}))
 elif args[:2] == ["-m", "bedrock_rl.train.sft"]:
-    pathlib.Path(os.environ["FIXTURE_ROOT"], "trained").touch()
+    source = pathlib.Path(args[args.index("--data") + 1])
+    pathlib.Path(os.environ["FIXTURE_ROOT"], "trained").write_text(str(source))
 else:
     sys.exit(subprocess.call([sys.executable, *args]))
 '''
@@ -183,6 +266,16 @@ else:
                 self.assertEqual((root / "trained").exists(), count > 0)
                 if not count:
                     self.assertEqual(data.read_text(), "old accepted harvest")
+                else:
+                    original_input = Path((root / "trained").read_text())
+                    self.assertEqual(data.resolve(), original_input.resolve())
+                    original_input.write_text("first run")
+                    subprocess.run(["bash", str(root / "self_distill.sh")],
+                                   env=env, check=True, capture_output=True)
+                    second_input = Path((root / "trained").read_text())
+                    self.assertNotEqual(second_input, original_input)
+                    self.assertEqual(original_input.read_text(), "first run")
+                    self.assertEqual(data.resolve(), second_input.resolve())
 
 
 class AdapterPortabilityTests(unittest.TestCase):

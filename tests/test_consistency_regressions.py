@@ -427,7 +427,7 @@ class ConsistencyRegressionTests(unittest.TestCase):
             name="equip", path="task.yaml", init={},
             success=Check({"type": "selected_item",
                            "items": ["iron_pickaxe"]}),
-            sample_init=lambda rng: (0.0, 0.0),
+            sample_init=lambda rng, seed=None: (0.0, 0.0),
         )
         episode = DrawEpisode.draw(task, 7, object(), parser=None)
         self.assertEqual(episode.env.obs["hotbar_ids"][0], other)

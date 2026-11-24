@@ -58,7 +58,12 @@ BRL_RUNG=""
 if [ -n "${TURN_HINT:-}" ] && [ "${TURN_HINT}" != off ]; then
     BRL_RUNG="_turn${TURN_HINT}"
 fi
-BRL_SET="$BRL_ROOT/data/${BRL_TASK_NAME}_cu/self_distill_${BRL_LEVEL}${BRL_RUNG}_${BRL_TAG}.parquet"
+BRL_LATEST="$BRL_ROOT/data/${BRL_TASK_NAME}_cu/self_distill_${BRL_LEVEL}${BRL_RUNG}_${BRL_TAG}.parquet"
+mkdir -p "$(dirname "$BRL_LATEST")"
+BRL_HARVEST_DIR="$(mktemp -d "${BRL_LATEST%.parquet}.XXXXXXXX")"
+BRL_SET="$BRL_HARVEST_DIR/accepted.parquet"
+BRL_HARVEST_RECEIPT="$BRL_HARVEST_DIR/receipt.json"
+trap 'rm -f "$BRL_HARVEST_RECEIPT"; rmdir "$BRL_HARVEST_DIR" 2>/dev/null || true' EXIT
 
 BRL_ARGS=()
 brl_flag --finish-hint FINISH_HINT
@@ -72,10 +77,6 @@ brl_flag --vllm-gpu-frac VLLM_GPU_FRAC
 brl_flag --vllm-max-model-len VLLM_MAX_MODEL_LEN
 
 cd "$BRL_ROOT"
-# A unique receipt binds the fine-tune to this invocation's accepted examples.
-# The parquet may legitimately still contain a previous successful harvest.
-BRL_HARVEST_RECEIPT="$(mktemp "${TMPDIR:-/tmp}/bedrock-harvest.XXXXXX")"
-trap 'rm -f "$BRL_HARVEST_RECEIPT"' EXIT
 brl_run python -m bedrock_rl.train.self_distill \
     --task "$(brl_task_yaml "$TASK")" \
     --data "$DATA" \
@@ -123,6 +124,15 @@ EOF
     echo "no fine-tune ran" >&2
     exit 1
 fi
+# Publish the familiar latest path atomically. Every trainer retains its own
+# immutable input even if another launch publishes while SFT is starting.
+brl_run python -c '
+import os, sys
+source, latest = sys.argv[1:]
+temporary = os.path.join(os.path.dirname(source), "latest")
+os.symlink(os.path.relpath(source, os.path.dirname(latest)), temporary)
+os.replace(temporary, latest)
+' "$BRL_SET" "$BRL_LATEST"
 [ -n "${HARVEST_ONLY:-}" ] && exit 0
 
 BRL_ARGS=()

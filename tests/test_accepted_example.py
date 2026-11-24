@@ -91,6 +91,17 @@ class AcceptedExampleTests(unittest.TestCase):
         self.assertIn(">train reward (each step)</text>", curve)
         self.assertIn(">20%</text>", curve)
 
+    def test_published_sensitivity_uses_36_paired_worlds(self):
+        from examples.equip_pickaxe_grpo.analyze_results import analyze
+
+        result = analyze()
+        self.assertEqual(result["unique_worlds"], 36)
+        self.assertEqual(result["pass3_successes"], [31, 64])
+        self.assertEqual(result["rows_by_target_slot"], dict.fromkeys(range(1, 10), 32))
+        self.assertEqual(result["whole_world_sign_flip_p"], 12 / 256)
+        self.assertEqual(result["whole_world_percentile_ci95"], [7 / 288, 64 / 288])
+        self.assertEqual(result["slot_stratified_percentile_ci95"], [17 / 288, 48 / 288])
+
     def test_pass3_evidence_has_three_complete_samples_per_prompt(self):
         curves = EXAMPLE / "curves"
         summary = json.loads((curves / "pass3_summary.json").read_text())

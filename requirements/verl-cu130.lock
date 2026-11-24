@@ -138,7 +138,7 @@ packaging==26.3
 pandas==2.3.3
 partial-json-parser==0.2.1.1.post7
 peft==0.20.0
-pillow==12.3.0
+pillow==13.0.0
 platformdirs==4.11.2
 prometheus-client==0.26.0
 prometheus-fastapi-instrumentator==8.1.0

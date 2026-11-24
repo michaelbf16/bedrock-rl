@@ -65,7 +65,9 @@ Rows already marked `loss_last_assistant_only: true` keep their chosen target.
 Self-distillation harvests use the same prefixes: `kept` and `yield` count
 accepted episodes, while `examples` counts supervised actions. The launcher
 requires a fresh receipt from that harvest before starting SFT; an empty run
-preserves an older parquet but never trains on it.
+preserves the previous successful dataset. Each successful invocation retains
+its own `accepted.parquet`. The conventional dataset filename points to the
+latest successful harvest, while SFT reads the immutable invocation file.
 
 Hub-backed LoRA checkpoints and exported verl adapters record the base model's
 repository and exact revision, including when training loaded a local Hub
@@ -146,15 +148,35 @@ New prompt rows carry the resolved task definition and its digest. Evaluation
 checks that binding before opening an episode; `--task` must match its content,
 even when the original file was edited in place. Records fingerprint the task,
 hint text, selected prompt/image rows, rendered initial prompt, processor,
-runtime, engine binary, patch/asset manifests, and restored snapshot. Matching
-paths alone cannot certify a paired comparison, and moving identical inputs
-to another path does not change their content identities.
+runtime, engine binary, patch/asset manifests, and restored snapshot.
+Protocol v3 also fingerprints custom success, failure, and shaping code in
+the configured import package and the implementing callable's package.
+For a custom check, declare its additional scoring inputs in the task YAML:
+
+```yaml
+verifier_dependencies:
+  modules: [world_score_helpers, scoring_package]
+  files: [rules/scoring_table.json]
+```
+
+Evaluation hashes declared module files, Python and extension code inside
+declared packages, and the bytes of each declared file relative to the task
+YAML. The declaration belongs to the task and is independent of the check's
+constructor arguments. Use `verifier_dependencies: {}` for a self-contained
+check. Include out-of-package helpers, transitive scoring dependencies, and
+local resources that affect the result. Newly generated rows record the
+declared files' content digests. To move a task and those files, pass the
+new YAML path to `bedrock eval trials`. The evaluator verifies those bytes
+and opens the episode with the relocated task. Older rows without the
+declared file digests need regeneration before relocating those files. Leave the declaration absent when a mutable external service
+cannot be versioned. The records then carry an unverified verifier status,
+which requires `--allow-legacy-protocol` for a descriptive comparison.
 
 Regenerate older prompt files when possible. To deliberately evaluate rows
 without a recorded task digest, pass `-- --allow-legacy-inputs`; the new records
-retain an unverified frozen-task status. To summarize historical records or
-these unverified-input runs, `bedrock eval summarize` requires
-`--allow-legacy-protocol`. The JSON, CLI output, and plots identify the weaker
+retain an unverified frozen-task status. Pass `--allow-legacy-protocol` to
+`bedrock eval summarize` for these inputs or historical records, including v2
+records that predate verifier fingerprints. The JSON, CLI output, and plots identify the weaker
 provenance. Historical and content-verified protocols cannot be mixed in one
 paired comparison; opting in does not add fingerprints to old evidence.
 

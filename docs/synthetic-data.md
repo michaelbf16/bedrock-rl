@@ -378,7 +378,9 @@ workers run the complete live policy and verifier with rendering disabled;
 they do not approximate actions or success. Rejected rows collapse into reason
 counts in the manifest, while every candidate result remains durable and
 accepted rows retain their selected decision seed and action digest. Relaunch
-the same command with the same `--scout-run` to reuse completed candidates; a
+the same command with the same `--scout-run` to reuse completed candidates.
+The lookup includes the ordered case group, so changing a `CaseFile` seed or
+sampler variation at an existing ordinal reevaluates that candidate. A
 changed manifest, referenced task, package/policy source, engine patch/pin,
 named job, or override set is refused under that run ID so results from
 different execution contracts cannot mix. Expected policy/seed

@@ -292,6 +292,10 @@ class Episode:
 
     def _initialize_state(self, task, seed, init_yaw, init_pitch, parser):
         """Finish initialization while the constructor owns cleanup."""
+        # A stable scalar also round-trips through Arrow for jobs with no
+        # overrides alongside jobs with several ordered renderer settings.
+        self.view_provenance["engine_render_set"] = ",".join(
+            getattr(self.env, "render_settings", ()))
         self.env.reset_pose(float(init_yaw), float(init_pitch))
         o = self.env.obs
         # Record the requested pose as the canonical episode coordinate. The
@@ -431,7 +435,7 @@ class Episode:
         task_yaml, seed, init_yaw, init_pitch = spec_values(spec)
         definition = spec.get("task_definition")
         if definition is not None:
-            recorded_task = Task.from_definition(definition)
+            recorded_task = Task.from_definition(definition, local_task=task)
             expected = recorded_task.definition()["sha256"]
             if spec.get("task_digest", expected) != expected:
                 raise ValueError("episode task digest disagrees with definition")
@@ -448,6 +452,14 @@ class Episode:
             episode.spec["task_definition"] = task.definition()
             episode.spec["task_digest"] = expected
         recorded_view = spec.get("view")
+        if recorded_view is not None:
+            recorded_view = dict(recorded_view)
+            # Older parquet rows omitted renderer overrides. They can replay
+            # under the ordinary renderer; mixed-schema Arrow structs may
+            # represent the missing string as null.
+            if ("engine_render_set" in episode.spec["view"]
+                    and recorded_view.get("engine_render_set") is None):
+                recorded_view["engine_render_set"] = ""
         if recorded_view is not None and recorded_view != episode.spec["view"]:
             episode.close()
             raise RuntimeError(
@@ -473,7 +485,7 @@ class Episode:
         blocked = frozenset(task.success.block_ids())
         rejected = []
         for _ in range(MAX_INIT_DRAWS):
-            yaw, pitch = task.sample_init(rng)
+            yaw, pitch = task.sample_init(rng, seed=seed)
             ep = cls(task, seed, yaw, pitch, parser=parser, **kw)
             # Distance is deliberately irrelevant: beginning on a target skips
             # the aiming skill even if the first click cannot yet reach it. Use

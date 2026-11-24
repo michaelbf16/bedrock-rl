@@ -100,6 +100,38 @@ class DynamicFeedbackTests(unittest.TestCase):
 @unittest.skipUnless(__import__("importlib").util.find_spec("torch"),
                      "torch is an optional training dependency")
 class SDFTCoreTests(unittest.TestCase):
+    def test_load_complete_demonstrations_from_causal_prefix_rows(self):
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from bedrock_rl.train.sdft import load_demonstrations
+
+        actions = [{"role": "assistant", "content": a} for a in ("walk", "mine")]
+        def prefix(source, stage, **flags):
+            return dict(seed=4, messages=actions[:stage],
+                        source_trajectory_id=source, curriculum_stage=stage,
+                        loss_last_assistant_only=True, **flags)
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "demos.jsonl"
+            rows = [
+                prefix("legacy", 2, turns=2), prefix("legacy", 1, turns=2),
+                prefix("filtered", 1, turns=2),
+                prefix("multi-call", 2, turns=3, source_action_count=2),
+                prefix("legacy", 2, turns=2),
+                dict(messages=actions, seed=4),
+            ]
+            path.write_text("\n".join(json.dumps(r) for r in rows))
+            demos = load_demonstrations(path)
+            self.assertEqual(len(demos), 3)
+            for demo in demos:
+                self.assertEqual([json.loads(line)["content"]
+                                  for line in demo.text.splitlines()],
+                                 ["walk", "mine"])
+            path.write_text(json.dumps(prefix("filtered", 1, turns=2)))
+            with self.assertRaisesRegex(ValueError, "no complete demonstrations"):
+                load_demonstrations(path)
+
     def test_ema_teacher_shares_frozen_base_and_copies_trainable_state(self):
         import torch
         from bedrock_rl.train.sdft import ema_teacher, update_teacher
@@ -171,6 +203,48 @@ class SDFTCoreTests(unittest.TestCase):
 
 
 class SDPOLossTests(unittest.TestCase):
+    @unittest.skipUnless(__import__("importlib").util.find_spec("torch"),
+                         "torch is an optional training dependency")
+    def test_microbatched_loss_and_gradient_match_batch_reductions(self):
+        import torch
+        from bedrock_rl.train.sdpo import SDPOConfig, agg_loss
+        from bedrock_rl.train.sdpo_trainer import sdpo_step
+
+        student, teacher = object(), object()
+        weight = torch.nn.Parameter(torch.tensor(1.0))
+        # Two active turns in trajectory zero, one in trajectory one, and an
+        # inactive turn. Each token's loss is factor * weight.
+        turns = [(0, 2, 2 / 3, 2), (0, 1, 1 / 3, 3),
+                 (1, 5, 1.0, 1), (2, 8, 0., 13)]
+        views = [dict(student=([factor], [1] * n),
+                      teacher=([factor], [1] * n), trajectory=t,
+                      trajectory_weight=share, sampling_log_probs=None,
+                      images=[]) for t, n, share, factor in turns]
+        def scores(model, coder, ids, mask, images, device, **kw):
+            score = weight.expand(len(mask)) * ids[0]
+            return score, None, None
+        def loss(student_lp, teacher_lp, mask, cfg, **kw):
+            per_token = student_lp.mean().item()
+            return agg_loss(student_lp, mask, cfg.loss_agg_mode), {
+                "sdpo/distilled_tokens": mask.sum().item(),
+                "sdpo/per_token_loss": per_token,
+                "sdpo/teacher_minus_student_logp": 0.0}
+        batch = torch.tensor([[2., 2., 3., 0., 0.], [1.] * 5])
+        mask = torch.tensor([[1., 1., 1., 0., 0.], [1.] * 5])
+        with patch("bedrock_rl.train.sdpo_trainer.resp_logprobs", scores), \
+                patch("bedrock_rl.train.sdpo_trainer.self_distillation_loss", loss):
+            for mode in ("token-mean", "seq-mean-token-mean", "seq-mean-token-sum"):
+                with self.subTest(mode=mode):
+                    weight.grad = None
+                    metrics = {}
+                    observed = sdpo_step(student, teacher, None, views,
+                                         SDPOConfig(loss_agg_mode=mode),
+                                         "cpu", metrics)
+                    expected = agg_loss(batch, mask, mode).item()
+                    self.assertAlmostEqual(observed, expected, places=5)
+                    self.assertAlmostEqual(weight.grad.item(), expected, places=5)
+                    self.assertAlmostEqual(metrics["sdpo/per_token_loss"], 1.5)
+
     @unittest.skipUnless(__import__("importlib").util.find_spec("torch"),
                          "torch is an optional training dependency")
     def test_sdpo_teacher_rate_is_validated(self):

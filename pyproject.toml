@@ -3,7 +3,7 @@ name = "bedrock-rl"
 version = "0.1.0"
 description = "Modular Minecraft agent environments and training"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 # Equal contribution, listed alphabetically by family name.
 authors = [
@@ -12,7 +12,7 @@ authors = [
     { name = "Yusuf Sheikh" },
 ]
 dependencies = [
-    "pillow>=10",
+    "pillow>=13.0.0",
     "pyyaml>=6",
     "rich>=13",
     "certifi>=2026.10.23",
@@ -32,7 +32,7 @@ train = [
     "peft==0.20.0",
     "datasets>=2.19",
     "pandas>=2",
-    "pillow>=10",
+    "pillow>=13.0.0",
 ]
 wandb = ["wandb>=0.16"]
 tensorboard = ["tensorboard>=2.18"]

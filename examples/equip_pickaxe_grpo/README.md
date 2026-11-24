@@ -27,11 +27,28 @@ in [`curves`](curves). The sealed test job was not opened because no
 development checkpoint met that stronger bar.
 
 At temperature 1 with three samples per prompt, pass@3 was 31/288 (10.8%) for
-the base and 64/288 (22.2%) at step 10. The paired comparison had 37 failures
-fixed, 4 successes lost, and a two-sided exact `p=1.03e-7`. This is a
-stochastic candidate-coverage result; it does not replace the deterministic
-single-attempt curve. Both 864-trial record files and
-`pass3_summary.json` are included for audit.
+the base and 64/288 (22.2%) at step 10. There were 37 paired improvements and
+four regressions. The exact two-sided McNemar test gives `p=1.03e-7` when
+treating the 288 prompt pairs as independent. Eight poses share each world
+and its hotbar. Swapping model labels together within each of the 36 worlds
+gives `p=0.046875` under world-level exchangeability. Eight worlds account
+for the entire net gain. The paired gain is 11.46 percentage points with a
+95% percentile interval of 2.43 to 22.22 points when resampling whole worlds.
+Keeping four worlds per target slot on each draw gives 5.90 to 16.67 points.
+
+On this balanced development set, any fixed number key solves 32/288 prompts
+in one attempt. Trying three distinct fixed keys covers 96/288 prompts in
+three attempts without reading the frame. At temperature zero, step 10 used
+only key 4 (154 rows), key 9 (95), and key 1 (39). These records measure
+candidate coverage on these worlds. Visual grounding across all nine slots
+remains unverified.
+
+Recompute the counts, slot controls, exact tests, and paired intervals from
+the committed records in the repository root:
+
+```bash
+uv run python -m examples.equip_pickaxe_grpo.analyze_results
+```
 
 Among the 36 unique worlds in each of train and dev, every possible target
 slot appears exactly four times. Each 288-row generated split cycles those

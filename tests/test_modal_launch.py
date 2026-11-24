@@ -126,19 +126,56 @@ class ModalLaunchTests(unittest.TestCase):
 
         calls = SimpleNamespace(cancelled=False)
         calls.cancel = lambda: setattr(calls, "cancelled", True)
-        module.scout = SimpleNamespace(
-            experimental_spawn_map=lambda *streams: calls)
+        def submit(*streams):
+            list(zip(*streams))
+            return calls
+
+        module.scout = SimpleNamespace(experimental_spawn_map=submit)
 
         manifest = module.coordinate("run", invocation, 0, 3, 2)
 
         self.assertFalse(manifest["complete"])
         self.assertEqual(manifest["fatal_count"], 1)
         self.assertEqual(manifest["infrastructure_failure_count"], 1)
-        self.assertIn(module._result_key("run", invocation, 1),
+        self.assertIn(module._result_key("run", invocation, 1, [Case(1).to_dict()]),
                       module.results)
-        self.assertIn(module._result_key("run", invocation, 2),
+        self.assertIn(module._result_key("run", invocation, 2, [Case(2).to_dict()]),
                       module.results)
         self.assertTrue(calls.cancelled)
+
+    def test_changed_case_file_cannot_reuse_a_different_world(self):
+        from bedrock_rl.sdg.generation import CaseFile
+
+        module = _load_sdg_app()
+        identity = "fixed-scout-configuration"
+        invocation = module._invocation_id("run", identity)
+        module._configuration_identity = lambda: identity
+        submitted = []
+
+        def submit(*streams):
+            for run, scope, attempt, ordinal, cases in zip(*streams):
+                submitted.append(cases[0]["seed"])
+                module.results[module._attempt_key(run, scope, attempt, ordinal)] = {
+                    "ok": True, "ordinal": ordinal,
+                    "accepted": [{"case": case} for case in cases],
+                }
+            return SimpleNamespace(cancel=lambda: None)
+
+        module.scout = SimpleNamespace(experimental_spawn_map=submit)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "seeds.jsonl"
+            module._components = lambda with_generator: (
+                SimpleNamespace(worlds=1, samples_per_world=1, seed=0),
+                CaseFile(path), None)
+            for seed in (11, 22, 22):
+                path.write_text(json.dumps(dict(index=0, seed=seed,
+                                                decision_seed=9)) + "\n")
+                manifest = module.coordinate("run", invocation, 0, 1, 1)
+                self.assertTrue(manifest["complete"])
+                self.assertEqual(manifest["accepted_cases"][0]["seed"], seed)
+                row = module.results[manifest["accepted_keys"][0]]
+                self.assertEqual(row["accepted"][0]["case"]["seed"], seed)
+        self.assertEqual(submitted, [11, 22])
 
     def test_scout_launch_reports_the_config_scoped_namespace(self):
         module = _load_sdg_app()

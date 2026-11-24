@@ -97,14 +97,17 @@ def dataset_path(task, mode, hint_level="none"):
 
 def load_episode_specs(path):
     """Read deterministic engine coordinates from an RL prompt parquet."""
-    import pandas as pd
+    import pyarrow.parquet as pq
 
-    frame = pd.read_parquet(path, columns=["extra_info"])
+    # Arrow retains nested lists as Python lists. pandas converts them to
+    # NumPy arrays, which cannot be compared as part of a renderer identity.
+    column = pq.read_table(path, columns=["extra_info"]).column("extra_info")
     specs = []
-    for info in frame["extra_info"]:
+    for scalar in column:
+        info = scalar.as_py()
         spec = episode_spec(info["task_yaml"], info["seed"],
                             info["init_yaw"], info["init_pitch"])
-        for key in ("task_definition", "task_digest"):
+        for key in ("task_definition", "task_digest", "view"):
             if key in info:
                 spec[key] = copy.deepcopy(info[key])
         specs.append(spec)

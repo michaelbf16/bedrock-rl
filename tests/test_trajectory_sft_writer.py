@@ -366,6 +366,7 @@ class TrajectorySFTWriterTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 2)
         self.assertEqual([row["curriculum_stage"] for row in rows], [1, 2])
+        self.assertEqual([row["source_action_count"] for row in rows], [2, 2])
         self.assertEqual([len(row["images"]) for row in rows], [1, 1])
         for row in rows:
             messages = json.loads(row["messages"])

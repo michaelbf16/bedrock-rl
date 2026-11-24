@@ -175,8 +175,8 @@ def sdpo_step(model, teacher, coder, views, cfg, device, metrics):
     module, so its old log-probability is the detached recomputation."""
     live = [v for v in views if v is not None]
     usable_trajectories = {v["trajectory"] for v in live}
-    distilled_trajectories = {
-        v["trajectory"] for v in live if v["trajectory_weight"] > 0}
+    active = [v for v in live if v["trajectory_weight"] > 0]
+    distilled_trajectories = {v["trajectory"] for v in active}
     n_distil = len(distilled_trajectories)
     metrics["sdpo/usable_views"] = len(live) / max(len(views), 1)
     metrics["sdpo/mask_fraction"] = (
@@ -189,10 +189,10 @@ def sdpo_step(model, teacher, coder, views, cfg, device, metrics):
         return 0.0
     topk = cfg.distillation_topk if cfg.full_logit_distillation else None
     total = 0.0
-    token_total = 0.0
-    for v in live:
-        if v["trajectory_weight"] <= 0:
-            continue
+    # Each forward holds one turn. Normalize over the complete generation
+    # batch exactly as agg_loss would for a single padded batch.
+    token_total = sum(sum(v["student"][1]) for v in active)
+    for v in active:
         s_ids, s_mask = v["student"]
         s_lp, s_topk, s_idx = resp_logprobs(model, coder, s_ids, s_mask,
                                             v["images"], device, topk=topk)
@@ -218,13 +218,18 @@ def sdpo_step(model, teacher, coder, views, cfg, device, metrics):
             student_topk_log_probs=None if s_topk is None else s_topk.unsqueeze(0),
             teacher_topk_log_probs=None if t_topk is None else t_topk.unsqueeze(0),
             self_distillation_mask=torch.ones(1, device=device))
-        scale = v["trajectory_weight"] / n_distil
+        token_share = m["sdpo/distilled_tokens"] / token_total
+        if cfg.loss_agg_mode == "token-mean":
+            scale = token_share
+        elif cfg.loss_agg_mode == "seq-mean-token-sum":
+            scale = 1.0 / n_distil  # the per-turn loss is already a sum
+        else:
+            scale = v["trajectory_weight"] / n_distil
         (loss * scale).backward()
         total += float(loss.detach()) * scale
         for key in ("sdpo/per_token_loss",
                     "sdpo/teacher_minus_student_logp"):
-            metrics[key] = metrics.get(key, 0.0) + m[key] * scale
-        token_total += m["sdpo/distilled_tokens"]
+            metrics[key] = metrics.get(key, 0.0) + m[key] * token_share
     metrics["sdpo/distilled_tokens"] = token_total / n_distil
     return total
 

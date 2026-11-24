@@ -52,8 +52,7 @@ DEEPSPEED_VERSION=0.19.4
 NETHERITE_HOME="${NETHERITE_HOME:-$HOME/netherite}"
 VERL_HOME="${VERL_HOME:-$HOME/verl}"
 VERL_ENV="${VERL_ENV:-$HOME/verl-env}"
-# 3.12 is the documented combo. 3.10 also resolves but needs a source-built
-# flash-attn if you want flash attention, which 3.12 gets from a wheel.
+# The documented Python 3.12 GPU stack uses the prebuilt flash-attn wheel.
 VERL_PYTHON="${VERL_PYTHON:-3.12}"
 
 if ! command -v uv >/dev/null 2>&1; then

@@ -107,4 +107,6 @@ class EpisodeProbe:
             "reward": float(episode.final_reward()),
             "spec": copy.deepcopy(episode.spec),
             "view": copy.deepcopy(episode.view_provenance),
+            **({"event_start": session.event_start}
+               if hasattr(session, "event_start") else {}),
         }

@@ -47,8 +47,10 @@ uv run bedrock smoke path/to/select-pickaxe.yaml
 - `initial_state.player`: selected item, health, food, saturation, and
   exhaustion.
 - `initial_state.spawn`: fixed points with pose, or distance constraints from
-  blocks. Constraint-selected spawns may set integer `hazard_clearance` to
-  require that many dry, non-hazard voxels around the player's body.
+  blocks. Each point may specify yaw and pitch. An explicit `init.yaw` or
+  `init.pitch` overrides that axis for the episode. Constraint-selected spawns
+  may set integer `hazard_clearance` to require that many dry, non-hazard
+  voxels around the player's body.
 - `initial_state.world`: time and mobs. The optional `mode`, `difficulty`,
   and `weather` declarations can document the engine defaults, but Netherite
   currently rejects anything except `survival`, `normal`, and `clear` rather
@@ -121,7 +123,10 @@ success:
 `ReachedStructure(block, radius)` may be a callable
 `(env, start_observation) -> bool` or expose
 `holds(env, start_observation) -> bool`. The task stores only JSON config;
-the component reads the live engine state when reward is evaluated.
+the component reads the live engine state when reward is evaluated. For a
+paired evaluation, declare the check's scoring dependencies in the task. A
+self-contained check uses `verifier_dependencies: {}`. See the
+[evaluation provenance example](training.md#metrics-and-evaluation).
 
 Use the same component mechanism for custom views, tools, context policies,
 state probes, and harnesses. The generic `bedrock trial` runner is useful

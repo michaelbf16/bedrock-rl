@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import time
+from pathlib import Path
 
 import torch
 import transformers
@@ -175,13 +176,44 @@ WEIGHT_INDEXES = ("model.safetensors.index.json",
                   "pytorch_model.bin.index.json")
 # Weights alone make a checkpoint loadable, not resumable: without
 # optimizer state a resume restarts Adam's moments and the LR schedule,
-# which is a different run wearing the same step number. DeepSpeed writes
-# its optimizer partitions into a `global_step<N>` directory instead of
-# one file, so either shape counts.
+# which is a different run wearing the same step number. The two backends
+# restore their state from different checkpoint layouts.
 OPTIMIZER_FILE = "optimizer.pt"
+SCHEDULER_FILE = "scheduler.pt"
 
 
-def checkpoint_problem(path):
+def _deepspeed_checkpoint_problem(path, config):
+    # Trainer calls DeepSpeed.load_checkpoint(path) without a tag. DeepSpeed
+    # follows latest, even if a different global_step directory is complete.
+    universal = bool(config and config.get("checkpoint", {}).get("load_universal"))
+    marker = "latest_universal" if universal else "latest"
+    try:
+        tag = (path / marker).read_text().strip()
+    except (OSError, UnicodeError):
+        return f"DeepSpeed checkpoint has no readable {marker} tag"
+    if not tag.startswith("global_step") or Path(tag).name != tag:
+        return f"invalid DeepSpeed checkpoint tag in {marker}"
+    directory = path / tag
+    if not any(f.is_file() for f in directory.glob("*mp_rank_*_model_states.pt")):
+        return f"no DeepSpeed model state under {tag}"
+    # Stage zero stores the optimizer in the model-state file. A ZeRO run
+    # stores separate optimizer partitions. The public auto-detect helper
+    # cannot infer ZeRO-1/2 from model-state filenames alone.
+    if config is not None:
+        zero = config.get("zero_optimization", {})
+        stage = int(zero.get("stage", 0) if isinstance(zero, dict) else zero)
+        if stage and not universal and not any(
+                f.is_file() for f in directory.glob("*_optim_states.pt")):
+            return f"no DeepSpeed optimizer partitions under {tag}"
+        # Transformers provides its own scheduler when it also provides the
+        # optimizer. Other configurations let DeepSpeed checkpoint it.
+        if ("optimizer" not in config and "scheduler" not in config
+                and not (path / SCHEDULER_FILE).is_file()):
+            return f"no {SCHEDULER_FILE} for the Transformers scheduler"
+    return None
+
+
+def checkpoint_problem(path, *, deepspeed_config="auto"):
     """Why this checkpoint directory cannot be resumed from, or None.
 
     A sentence rather than a boolean, because every caller has to be able
@@ -190,9 +222,16 @@ def checkpoint_problem(path):
     if not os.path.isdir(path):
         return "it is not a directory"
     have = set(os.listdir(path))
-    if STATE_FILE not in have:
+    if not os.path.isfile(os.path.join(path, STATE_FILE)):
         return (f"no {STATE_FILE}, so the step, the schedule and the "
                 f"metric history the resume needs are not there")
+    # Callers inspecting an unknown checkpoint may infer the layout. The
+    # trainer passes its resolved configuration (None for ordinary SFT).
+    if deepspeed_config == "auto":
+        if OPTIMIZER_FILE not in have and "latest" in have:
+            return _deepspeed_checkpoint_problem(Path(path), None)
+    elif deepspeed_config is not None:
+        return _deepspeed_checkpoint_problem(Path(path), deepspeed_config)
     weights = [f for f in WEIGHT_FILES if f in have]
     indexes = [f for f in WEIGHT_INDEXES if f in have]
     if not weights and not indexes:
@@ -209,12 +248,10 @@ def checkpoint_problem(path):
             return (f"{index} names {len(shards)} shard(s) and "
                     f"{len(gone)} of them were never written, first "
                     f"{gone[0]!r}")
-    if OPTIMIZER_FILE not in have and not any(
-            d.startswith("global_step") and os.path.isdir(
-                os.path.join(path, d)) for d in have):
-        return (f"no {OPTIMIZER_FILE} and no DeepSpeed global_step "
-                f"directory, so a resume would restart the optimizer and "
-                f"the learning-rate schedule from scratch")
+    for state_file in (OPTIMIZER_FILE, SCHEDULER_FILE):
+        if not os.path.isfile(os.path.join(path, state_file)):
+            return (f"no {state_file}. Transformers needs both optimizer "
+                    "and scheduler state to restore either one")
     return None
 
 
@@ -231,7 +268,7 @@ def checkpoints_under(out):
         if d.startswith("checkpoint-") and d.split("-")[-1].isdigit())
 
 
-def newest_resumable(out, note=None):
+def newest_resumable(out, note=None, *, deepspeed_config="auto"):
     """The highest-numbered COMPLETE checkpoint under `out`, or None.
 
     Incomplete ones are skipped and every skip is announced. Skipping
@@ -242,7 +279,7 @@ def newest_resumable(out, note=None):
     step counter.
     """
     for step, path in reversed(checkpoints_under(out)):
-        why = checkpoint_problem(path)
+        why = checkpoint_problem(path, deepspeed_config=deepspeed_config)
         if why is None:
             return path
         if note:
@@ -326,18 +363,16 @@ class Collator:
             att.append(torch.nn.functional.pad(f["attention_mask"], (0, n)))
             lab.append(torch.nn.functional.pad(f["labels"], (0, n),
                                                value=IGNORE))
-        return {"input_ids": torch.stack(ids),
-                "attention_mask": torch.stack(att),
-                "labels": torch.stack(lab),
-                "pixel_values": torch.cat([f["pixel_values"]
-                                           for f in feats]),
-                # one row per image. Every example is a trajectory now, so
-                # the grid arrives (n_frames, 3) and a single-turn row is
-                # (1, 3); the unsqueeze holds for a (3,) an older
-                # producer might still hand over.
-                "image_grid_thw": torch.cat(
-                    [f["image_grid_thw"] if f["image_grid_thw"].dim() == 2
-                     else f["image_grid_thw"].unsqueeze(0) for f in feats])}
+        batch = {"input_ids": torch.stack(ids),
+                 "attention_mask": torch.stack(att),
+                 "labels": torch.stack(lab)}
+        visual = [f for f in feats if f["pixel_values"] is not None]
+        if visual:
+            batch["pixel_values"] = torch.cat([f["pixel_values"] for f in visual])
+            # Older single-image rows may store their THW grid as (3,).
+            batch["image_grid_thw"] = torch.cat(
+                [f["image_grid_thw"].reshape(-1, 3) for f in visual])
+        return batch
 
 
 def main():
@@ -439,11 +474,9 @@ def main():
         save_steps=(a.save_every if a.save_every > 0 else 500),
         save_total_limit=2,
         remove_unused_columns=False, dataloader_num_workers=0,
-        # Every trainable adapter/language parameter participates in this
-        # ordinary causal-LM forward. DDP's unused-parameter graph walk was
-        # pure overhead on every long multimodal sequence (and PyTorch said
-        # so on every rank of the measured six-GPU run).
-        ddp_find_unused_parameters=False,
+        # A text-only batch does not visit the vision tower. Full tuning
+        # can receive different mixtures of visual rows on different ranks.
+        ddp_find_unused_parameters=not (use_lora or a.freeze_vision),
         # the bar is a page of carriage returns in a tee'd log, and
         # ReporterCallback prints the same numbers as one line
         disable_tqdm=True,
@@ -531,12 +564,14 @@ def main():
                transformers.trainer_callback.ProgressCallback):
         trainer.remove_callback(cb)
     resume = a.resume
+    resume_config = (trainer.accelerator.state.deepspeed_plugin.deepspeed_config
+                     if trainer.is_deepspeed_enabled else None)
     if resume == "auto":
         # Trainer writes checkpoint-<step> under output_dir. Highest step
         # first, and every one that did not finish being written is
         # skipped out loud (checkpoint_problem says which part is
         # missing) rather than handed to Trainer to fail on.
-        resume = newest_resumable(a.out, ui.warn)
+        resume = newest_resumable(a.out, ui.warn, deepspeed_config=resume_config)
         log(f"resuming from {resume}" if resume
             else "nothing complete to resume from, starting fresh")
     elif resume:
@@ -544,7 +579,7 @@ def main():
         # starting from scratch because the directory they asked for was
         # half-written is the one outcome they cannot see in the logs
         # until the step counter is back at zero.
-        why = checkpoint_problem(resume)
+        why = checkpoint_problem(resume, deepspeed_config=resume_config)
         if why is not None:
             ui.finish(failed=True)
             raise SystemExit(

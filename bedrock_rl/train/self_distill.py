@@ -96,6 +96,7 @@ def harvest_rows(rollouts, hint):
                 "messages": json.dumps(messages),
                 "images": causal_images,
                 "loss_last_assistant_only": True,
+                "source_action_count": len(prefixes),
                 "reward": float(r.reward),
                 "seed": int(r.spec["seed"]),
                 "turns": int(r.turns),

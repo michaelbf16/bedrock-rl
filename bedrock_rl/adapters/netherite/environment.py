@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -21,7 +22,8 @@ class NetheriteSession:
         self.episode = episode
         self.task = task
         self.use_task_prompt = bool(use_task_prompt)
-        self._event_index = 0
+        self.event_start = getattr(episode, "journal_start", 0)
+        self._event_index = self.event_start
 
     @property
     def done(self):
@@ -62,7 +64,8 @@ class NetheriteEnvironment:
 
     ``episode`` may carry the four deterministic coordinates of an existing
     trial. Without it, the adapter draws a legal pose from the configured
-    seed exactly as the existing data builders do.
+    seed exactly as the existing data builders do. Visual trials use process-
+    owned scratch by default. Set ``capture_frames=False`` for text-only trials.
     """
 
     def __init__(self, task_yaml: str, *, episode: Mapping[str, Any] | None = None,
@@ -70,13 +73,16 @@ class NetheriteEnvironment:
                  netherite_home: str | None = None,
                  frames_root: str | None = None, raster: str | None = None,
                  view_distance: int | None = None,
-                 use_task_prompt: bool = True):
+                 use_task_prompt: bool = True, capture_frames: bool = True):
         self.task_yaml = str(task_yaml)
         self.episode_spec = None if episode is None else dict(episode)
         self.seed = seed
         self.random_seed = int(random_seed)
         self.netherite_home = netherite_home
-        self.frames_root = frames_root
+        self.capture_frames = capture_frames
+        self.frames_root = frames_root if capture_frames else None
+        if capture_frames and frames_root is None:
+            self.frames_root = Path(tempfile.gettempdir()) / "bedrock-rl-trial-frames"
         self.raster = raster
         self.view_distance = view_distance
         self.use_task_prompt = bool(use_task_prompt)
@@ -87,7 +93,8 @@ class NetheriteEnvironment:
                 if definition is not None else NetheriteTask.load(task_yaml))
         parser = cu_parser(task)
         options = {"netherite_home": self.netherite_home,
-                   "frames_root": self.frames_root, "raster": self.raster,
+                   "frames_root": self.frames_root, "capture_frames": self.capture_frames,
+                   "raster": self.raster,
                    "view_distance": self.view_distance}
         options = {key: value for key, value in options.items()
                    if value is not None}

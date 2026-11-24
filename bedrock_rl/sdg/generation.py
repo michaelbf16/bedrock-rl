@@ -17,6 +17,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from itertools import chain, islice
 from multiprocessing import get_context
+from multiprocessing.connection import wait as wait_connections
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Mapping
@@ -1227,6 +1228,112 @@ def _process_pool_failure(pool, known_processes, expected_pids):
     return None
 
 
+# A completed isolated worker has no remaining candidate work. Give its
+# generator close hook and interpreter a short opportunity to finish normally.
+_WORKER_CLOSE_GRACE = 0.5
+
+
+def _isolated_candidate(sender, initargs, fn, args, device):
+    """Own one candidate and its result pipe for the worker's lifetime."""
+    if device is not None:
+        os.environ["NETHERITE_ENV_GPUS"] = device
+    try:
+        _process_init(*initargs)
+        sender.send(fn(*args))
+    finally:
+        sender.close()
+        close = getattr(_PROCESS_GENERATOR, "close", None)
+        if close is not None:
+            close()
+
+
+def _reap_isolated(process, grace):
+    process.join(timeout=grace)
+    if process.is_alive():
+        # Internal generator threads can outlive the result. SIGKILL also
+        # handles cancellation of code with a custom SIGTERM handler.
+        process.kill()
+        process.join()
+        return None
+    return process.exitcode
+
+
+def _run_isolated(context, workers, window, stream, initargs, fn, spool,
+                  gpu_devices, heartbeat, heartbeat_seconds):
+    """Keep the process handle until its assigned result arrives or fails."""
+    active = {}
+    ready = {}
+    slots = list(reversed(range(workers)))
+    source = enumerate(stream)
+    emitted = submitted = 0
+    exhausted = False
+    try:
+        while True:
+            while (not exhausted and len(active) < workers
+                   and submitted - emitted < window):
+                try:
+                    ordinal, value = next(source)
+                except StopIteration:
+                    exhausted = True
+                    break
+                args = (value, spool.name) if spool is not None else (value,)
+                reader, writer = context.Pipe(duplex=False)
+                slot = slots.pop()
+                device = gpu_devices[slot % len(gpu_devices)] if gpu_devices else None
+                process = context.Process(
+                    target=_isolated_candidate, args=(writer, initargs, fn, args, device),
+                    daemon=True)
+                try:
+                    process.start()
+                except BaseException:
+                    reader.close()
+                    raise
+                finally:
+                    writer.close()
+                active[reader] = (ordinal, process, slot)
+                submitted += 1
+            if emitted in ready:
+                value = ready.pop(emitted)
+                emitted += 1
+                yield value
+                continue
+            if not active:
+                return
+            readable = wait_connections(active, timeout=heartbeat_seconds)
+            if not readable and heartbeat is not None:
+                heartbeat({"submitted": submitted, "completed": emitted + len(ready),
+                           "committed": emitted, "running": len(active)})
+            for reader in readable:
+                ordinal, process, slot = active[reader]
+                try:
+                    ready[ordinal] = reader.recv()
+                except (EOFError, OSError) as exc:
+                    _reap_isolated(process, _WORKER_CLOSE_GRACE)
+                    raise RuntimeError(
+                        f"process worker {process.pid} exited with code "
+                        f"{process.exitcode} before returning candidate {ordinal}"
+                    ) from exc
+                code = _reap_isolated(process, _WORKER_CLOSE_GRACE)
+                if code not in (0, None):
+                    raise RuntimeError(f"process worker {process.pid} failed during "
+                                       f"cleanup of candidate {ordinal} with code {code}")
+                reader.close()
+                process.close()
+                del active[reader]
+                slots.append(slot)
+    finally:
+        # Signal every active process before waiting so the cancellation
+        # grace interval is shared across the entire in-flight tail.
+        for _, process, _ in active.values():
+            if process.is_alive():
+                process.terminate()
+        deadline = time.monotonic() + _WORKER_CLOSE_GRACE
+        for reader, (_, process, _) in active.items():
+            _reap_isolated(process, max(0, deadline - time.monotonic()))
+            process.close()
+            reader.close()
+
+
 class ProcessExecutor:
     """One generator and, for Netherite, one C engine per worker.
 
@@ -1297,8 +1404,8 @@ class ProcessExecutor:
         # An explicit worker count remains an intentional oversubscription.
         if self.workers in (None, "auto") and gpu_devices:
             ceiling = min(ceiling, len(gpu_devices))
-        gpu_counter = (context.Value("Q", 0)
-                       if gpu_devices and ceiling > 1 else None)
+        gpu_counter = (context.Value("Q", 0) if gpu_devices and ceiling > 1
+                       and self.candidate_timeout_seconds is None else None)
 
         def results():
             spool = (tempfile.TemporaryDirectory(
@@ -1321,30 +1428,23 @@ class ProcessExecutor:
                         if close is not None:
                             close()
                     return
-                initargs = (
-                    generator, base_dir, metadata, gpu_devices,
-                    gpu_counter, self.candidate_timeout_seconds,
-                    os.getpid())
                 if self.candidate_timeout_seconds is not None:
-                    # An asynchronous deadline may interrupt arbitrary custom
-                    # generator code after it mutated process-local state.
-                    # Retiring the worker after this candidate means neither
-                    # that state nor a half-torn-down native extension can
-                    # contaminate the replacement world. Pool preserves the
-                    # configured concurrency by spawning a clean slot.
-                    pool = context.Pool(
-                        workers, initializer=_process_init,
-                        initargs=initargs, maxtasksperchild=1)
-                else:
-                    pool = context.Pool(
-                        workers, initializer=_process_init,
-                        initargs=initargs)
+                    initargs = (generator, base_dir, metadata, (), None,
+                                self.candidate_timeout_seconds, os.getpid())
+                    # A fresh process owns exactly one case. Its pipe closes
+                    # even on abrupt death, including between heartbeats.
+                    yield from _run_isolated(
+                        context, workers, workers * self.chunksize, stream,
+                        initargs, fn, spool, gpu_devices, heartbeat, self.heartbeat_seconds)
+                    return
+                initargs = (generator, base_dir, metadata, gpu_devices,
+                            gpu_counter, None, os.getpid())
+                pool = context.Pool(
+                    workers, initializer=_process_init, initargs=initargs)
                 expected_pids = {
                     getattr(process, "pid", None)
                     for process in getattr(pool, "_pool", ())}
                 expected_pids.discard(None)
-                if self.candidate_timeout_seconds is not None:
-                    expected_pids.clear()
                 known_processes = list(getattr(pool, "_pool", ()))
                 source = iter(stream)
                 completed = Queue()

@@ -256,6 +256,137 @@ class EvaluationProtocolTests(unittest.TestCase):
                     with self.assertRaisesRegex(EvaluationError, "changed evaluation protocol"):
                         analyze([PointSpec("base", 0, base), PointSpec("final", 1, final)])
 
+    def test_custom_verifier_helper_change_invalidates_paired_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "bedrock_test_reward"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                "from .rules import holds\n")
+            (package / "rules.py").write_text(
+                "from .threshold import verdict\n"
+                "def holds(env, start):\n    return verdict()\n")
+            helper = package / "threshold.py"
+            module_names = ("bedrock_test_reward", "bedrock_test_reward.rules",
+                            "bedrock_test_reward.threshold")
+            task_path = root / "task.yaml"
+            doc = {**DOCUMENT, "success": {"type": "bedrock_test_reward:holds"},
+                   "verifier_dependencies": {}}
+            environment = engine_episode(root / "engine")
+            points = []
+            with patch.object(sys, "path", [str(root), *sys.path]):
+                try:
+                    for idx, expected in enumerate((False, True)):
+                        for name in module_names:
+                            sys.modules.pop(name, None)
+                        helper.write_text(f"def verdict():\n    return {expected!r}\n")
+                        importlib.invalidate_caches()
+                        task = Task(doc, path=task_path)
+                        success = task.success.holds(None, {})
+                        self.assertIs(success, expected)
+                        protocol = contract(task, [frozen_row(task)], environment)
+                        records = root / f"records{idx}.json"
+                        records.write_text(json.dumps([record(protocol, success)]))
+                        points.append(PointSpec(str(idx), idx, records))
+                    with self.assertRaisesRegex(EvaluationError, "changed evaluation protocol"):
+                        analyze(points)
+                finally:
+                    for name in module_names:
+                        sys.modules.pop(name, None)
+
+    def test_external_verifier_dependencies_and_task_relative_assets(self):
+        from bedrock_rl.eval.protocol import verifier_identity
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            modules = root / "modules"
+            package = modules / "audit_scores"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("score = 1\n")
+            helper = modules / "audit_helper.py"
+            helper.write_text("score = 1\n")
+            (modules / "audit_predicate.py").write_text(
+                "import audit_helper, audit_scores\n"
+                "def holds(env, start):\n"
+                "    return audit_helper.score == audit_scores.score\n")
+            doc = {**DOCUMENT, "success": {"type": "audit_predicate:holds"}}
+            original, moved = root / "original", root / "moved"
+            original.mkdir()
+            moved.mkdir()
+            for base in (original, moved):
+                (base / "scoring.json").write_text("1")
+            environment = engine_episode(root / "engine")
+            with patch.object(sys, "path", [str(modules), *sys.path]):
+                try:
+                    task = Task(doc, path=str(original / "task.yaml"))
+                    protocol = contract(task, [frozen_row(task)], environment)
+                    self.assertFalse(protocol["verifier_dependencies_verified"])
+                    output = root / "records.json"
+                    output.write_text(json.dumps([record(protocol)]))
+                    points = [PointSpec("a", 0, output), PointSpec("b", 1, output)]
+                    with self.assertRaisesRegex(EvaluationError, "undeclared"):
+                        analyze(points)
+                    self.assertEqual(analyze(points, allow_legacy_protocol=True)
+                                     ["contract_verification"], "undeclared-verifier-dependencies")
+
+                    doc["verifier_dependencies"] = {
+                        "modules": ["audit_helper", "audit_scores"], "files": ["scoring.json"]}
+                    task = Task(doc, path=str(original / "task.yaml"))
+                    relocated = Task(doc, path=str(moved / "task.yaml"))
+                    (moved / "task.yaml").write_text(yaml.safe_dump(doc))
+                    frozen = Task.from_definition(task.definition())
+                    before, verified = verifier_identity(frozen)
+                    self.assertTrue(verified)
+                    self.assertEqual((before, True), verifier_identity(relocated))
+                    for artifact in (helper, package / "__init__.py", original / "scoring.json"):
+                        data = artifact.read_bytes()
+                        artifact.write_bytes(data + b" ")
+                        self.assertNotEqual(before, verifier_identity(frozen)[0])
+                        artifact.write_bytes(data)
+                    frozen_row_before_move = frozen_row(task)
+                    shutil.rmtree(original)
+                    selected = evaluation_task([frozen_row_before_move], str(moved / "task.yaml"))
+                    self.assertEqual(Path(selected.path).resolve(), (moved / "task.yaml").resolve())
+                    # Confirm that the actual Episode constructor is given the
+                    # attested new base, rather than silently reverting to the
+                    # disappeared path in the frozen definition.
+                    from bedrock_rl.env.episode import Episode
+                    with patch.object(Episode, "__init__", return_value=None) as opened, \
+                            patch.object(Episode, "spec", {}, create=True):
+                        episode = Episode.from_spec(frozen_row_before_move["extra_info"],
+                                                    lambda *_: None, task=selected)
+                        self.assertEqual(Path(opened.call_args.args[0].path).resolve(),
+                                         (moved / "task.yaml").resolve())
+                        self.assertEqual(episode.spec["task_definition"]["verifier_files_sha256"],
+                                         selected.verifier_file_digests())
+                    legacy = copy.deepcopy(frozen_row_before_move)
+                    definition = json.loads(legacy["extra_info"]["task_definition"])
+                    definition.pop("verifier_files_sha256")
+                    legacy["extra_info"]["task_definition"] = json.dumps(definition)
+                    with self.assertRaisesRegex(SystemExit, "cannot relocate"):
+                        evaluation_task([legacy], str(moved / "task.yaml"))
+                    (moved / "scoring.json").write_text("2")
+                    with self.assertRaisesRegex(SystemExit, "dependency files"):
+                        evaluation_task([frozen_row_before_move], str(moved / "task.yaml"))
+                finally:
+                    for name in ("audit_scores", "audit_helper", "audit_predicate"):
+                        sys.modules.pop(name, None)
+
+    def test_v2_evidence_requires_explicit_historical_comparison(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = Task(copy.deepcopy(DOCUMENT), path=str(root / "task.yaml"))
+            protocol = contract(task, [frozen_row(task)], engine_episode(root / "engine"))
+            protocol["schema"] = "bedrock.eval-protocol.v2"
+            protocol.pop("verifier_sha256")
+            path = root / "historical.json"
+            path.write_text(json.dumps([record(protocol)]))
+            points = [PointSpec("a", 0, path), PointSpec("b", 1, path)]
+            with self.assertRaisesRegex(EvaluationError, "allow-legacy-protocol"):
+                analyze(points)
+            self.assertEqual(analyze(points, allow_legacy_protocol=True)
+                             ["contract_verification"], "v2-unverified-verifier")
+
     def test_content_identity_is_stable_across_hosts_and_shard_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
